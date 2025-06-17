@@ -11,15 +11,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # PASSO NOVO: Baixar arquivos do Google Drive
-      - name: Download input files from Google Drive
-        uses: satackey/action-google-drive@v1
-        with:
-          credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
-          gdrive-file-id: ${{ github.event.client_payload.file_name_gdrive }}
-          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # ID da pasta onde o arquivo está
-          download-to: './' # Baixa o conteúdo da pasta para a raiz do projeto
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -30,20 +21,35 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas matplotlib seaborn requests Babel reportlab
 
-      - name: Run main.py
-        env:
-          API_KEY: ${{ secrets.API_KEY }}
-        run: python main.py
+      # PASSO DE DOWNLOAD CORRIGIDO
+      - name: Download input file from Google Drive
+        uses: satackey/action-google-drive@v1
+        with:
+          credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
+          gdrive-file-id: ${{ github.event.client_payload.file_name_gdrive }}
+          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # <-- COLOQUE O ID DA SUA PASTA AQUI
+          download-to: './'
 
-      - name: Run sheets.py
+      # PASSO DE EXECUÇÃO DO SCRIPT CORRIGIDO
+      - name: Run Python script and capture output
+        id: run_script
         env:
           API_KEY: ${{ secrets.API_KEY }}
-        run: python sheets.py
-      
-      # PASSO NOVO: Fazer upload dos resultados para o Google Drive
+        run: |
+          # A última linha do seu script Python deve imprimir o nome do arquivo de saída
+          echo "file_name=$(python SEU_SCRIPT_PRINCIPAL.py)" >> $GITHUB_OUTPUT
+
+      # PASSO DE UPLOAD CORRIGIDO
       - name: Upload output files to Google Drive
         uses: satackey/action-google-drive@v1
         with:
           credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
-          upload-from: ${{ steps.run_script.outputs.file_name }} # Pega o nome do arquivo da saída do script
-          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # ID da pasta de destino
+          upload-from: ${{ steps.run_script.outputs.file_name }}
+          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # <-- COLOQUE O ID DA SUA PASTA AQUI
+      
+      # PASSO PARA NOTIFICAR O N8N
+      - name: Notify n8n of completion
+        run: |
+          curl -X POST -H "Content-Type: application/json" \
+          -d '{"chat_id": "${{ github.event.client_payload.chat_id }}", "processed_file_name": "${{ steps.run_script.outputs.file_name }}"}' \
+          URL_DO_SEU_WEBHOOK_DO_WORKFLOW_2_NO_N8N
