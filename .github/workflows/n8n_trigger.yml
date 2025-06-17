@@ -16,7 +16,8 @@ jobs:
         uses: satackey/action-google-drive@v1
         with:
           credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
-          gdrive-file-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # <-- SUBSTITUA AQUI
+          gdrive-file-id: ${{ github.event.client_payload.file_name_gdrive }}
+          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # ID da pasta onde o arquivo está
           download-to: './' # Baixa o conteúdo da pasta para a raiz do projeto
 
       - name: Set up Python
@@ -44,5 +45,5 @@ jobs:
         uses: satackey/action-google-drive@v1
         with:
           credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
-          upload-from: 'nome_do_arquivo_gerado.pdf' # <-- SUBSTITUA com o nome do arquivo a ser enviado
-          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # <-- SUBSTITUA AQUI de novo
+          upload-from: ${{ steps.run_script.outputs.file_name }} # Pega o nome do arquivo da saída do script
+          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # ID da pasta de destino
