@@ -1,55 +1,60 @@
 name: Run Python Scripts from n8n
 
+# Gatilho para ser acionado pelo n8n
 on:
   repository_dispatch:
     types: [run-scripts]
 
+# Define os trabalhos a serem executados
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # 1. Faz o checkout do código do seu repositório
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # 2. Configura o ambiente Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
+      # 3. Instala as dependências do seu script
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas matplotlib seaborn requests Babel reportlab
 
-      # PASSO DE DOWNLOAD CORRIGIDO
+      # 4. Baixa o arquivo de entrada do Google Drive
       - name: Download input file from Google Drive
         uses: satackey/action-google-drive@v1
         with:
           credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
           gdrive-file-id: ${{ github.event.client_payload.file_name_gdrive }}
-          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # <-- COLOQUE O ID DA SUA PASTA AQUI
+          gdrive-folder-id: 'SUA_INFO_AQUI_ID_DA_PASTA_DO_DRIVE'
           download-to: './'
 
-      # PASSO DE EXECUÇÃO DO SCRIPT CORRIGIDO
+      # 5. Executa o script Python e captura o nome do arquivo de saída
       - name: Run Python script and capture output
         id: run_script
         env:
           API_KEY: ${{ secrets.API_KEY }}
         run: |
-          # A última linha do seu script Python deve imprimir o nome do arquivo de saída
-          echo "file_name=$(python SEU_SCRIPT_PRINCIPAL.py)" >> $GITHUB_OUTPUT
+          # A última linha do seu script Python deve ser um "print()" com o nome do arquivo gerado
+          echo "file_name=$(python SUA_INFO_AQUI_NOME_DO_SEU_SCRIPT.py)" >> $GITHUB_OUTPUT
 
-      # PASSO DE UPLOAD CORRIGIDO
+      # 6. Faz o upload do arquivo de resultado para o Google Drive
       - name: Upload output files to Google Drive
         uses: satackey/action-google-drive@v1
         with:
           credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
           upload-from: ${{ steps.run_script.outputs.file_name }}
-          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # <-- COLOQUE O ID DA SUA PASTA AQUI
+          gdrive-folder-id: 'SUA_INFO_AQUI_ID_DA_PASTA_DO_DRIVE'
       
-      # PASSO PARA NOTIFICAR O N8N
+      # 7. Notifica o n8n que o processo terminou, enviando o nome do arquivo processado
       - name: Notify n8n of completion
         run: |
           curl -X POST -H "Content-Type: application/json" \
           -d '{"chat_id": "${{ github.event.client_payload.chat_id }}", "processed_file_name": "${{ steps.run_script.outputs.file_name }}"}' \
-          URL_DO_SEU_WEBHOOK_DO_WORKFLOW_2_NO_N8N
+          SUA_INFO_AQUI_URL_DO_WEBHOOK_WORKFLOW_2_N8N
