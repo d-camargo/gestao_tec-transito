@@ -1,1 +1,35 @@
+name: Run Python Scripts from n8n
 
+on:
+  repository_dispatch:
+    types: [run-scripts]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas matplotlib seaborn requests Babel reportlab
+
+      - name: Run main.py
+        env:
+          # Mapeia o secret do GitHub para uma variável de ambiente
+          # Substitua 'NOME_DO_SEU_SECRET' pelo nome real do seu secret
+          NOME_DO_SEU_SECRET: ${{ secrets.NOME_DO_SEU_SECRET }}
+        run: python main.py
+
+      - name: Run sheets.py
+        env:
+          # Faça o mesmo para qualquer secret que o sheets.py precise
+          NOME_DO_SEU_SECRET: ${{ secrets.NOME_DO_SEU_SECRET }}
+        run: python sheets.py
