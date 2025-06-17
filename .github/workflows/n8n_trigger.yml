@@ -1,0 +1,48 @@
+name: Run Python Scripts from n8n
+
+on:
+  repository_dispatch:
+    types: [run-scripts]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # PASSO NOVO: Baixar arquivos do Google Drive
+      - name: Download input files from Google Drive
+        uses: satackey/action-google-drive@v1
+        with:
+          credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
+          gdrive-file-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # <-- SUBSTITUA AQUI
+          download-to: './' # Baixa o conteúdo da pasta para a raiz do projeto
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas matplotlib seaborn requests Babel reportlab
+
+      - name: Run main.py
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+        run: python main.py
+
+      - name: Run sheets.py
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+        run: python sheets.py
+      
+      # PASSO NOVO: Fazer upload dos resultados para o Google Drive
+      - name: Upload output files to Google Drive
+        uses: satackey/action-google-drive@v1
+        with:
+          credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
+          upload-from: 'nome_do_arquivo_gerado.pdf' # <-- SUBSTITUA com o nome do arquivo a ser enviado
+          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # <-- SUBSTITUA AQUI de novo
