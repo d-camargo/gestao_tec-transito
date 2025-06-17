@@ -11,10 +11,18 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # PASSO NOVO: Baixar arquivos do Google Drive
+      - name: Download input files from Google Drive
+        uses: satackey/action-google-drive@v1
+        with:
+          credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
+          gdrive-file-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # <-- SUBSTITUA AQUI
+          download-to: './' # Baixa o conteúdo da pasta para a raiz do projeto
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.x'
 
       - name: Install dependencies
         run: |
@@ -23,13 +31,18 @@ jobs:
 
       - name: Run main.py
         env:
-          # Mapeia o secret do GitHub para uma variável de ambiente
-          # Substitua 'NOME_DO_SEU_SECRET' pelo nome real do seu secret
-          NOME_DO_SEU_SECRET: ${{ secrets.NOME_DO_SEU_SECRET }}
+          API_KEY: ${{ secrets.API_KEY }}
         run: python main.py
 
       - name: Run sheets.py
         env:
-          # Faça o mesmo para qualquer secret que o sheets.py precise
-          NOME_DO_SEU_SECRET: ${{ secrets.NOME_DO_SEU_SECRET }}
+          API_KEY: ${{ secrets.API_KEY }}
         run: python sheets.py
+      
+      # PASSO NOVO: Fazer upload dos resultados para o Google Drive
+      - name: Upload output files to Google Drive
+        uses: satackey/action-google-drive@v1
+        with:
+          credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
+          upload-from: 'nome_do_arquivo_gerado.pdf' # <-- SUBSTITUA com o nome do arquivo a ser enviado
+          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv' # <-- SUBSTITUA AQUI de novo
