@@ -6,6 +6,7 @@ import re
 import requests # Adicionado para chamadas de API
 import json
 import io # Adicionado para lidar com a imagem em memória
+from google.colab import userdata # Adicionado para ler os segredos do Colab
 from datetime import datetime
 from babel.dates import format_date # Adicionado para formatar a data em português
 from reportlab.pdfgen import canvas
@@ -42,10 +43,10 @@ def get_simplified_name(code, disciplinas_dict):
 def calcular_estatisticas(df_notas, disciplinas_dict, nome_curso):
     """Calcula as estatísticas básicas para um curso."""
     estatisticas = {}
-    
+
     disciplinas_presentes = [col for col in disciplinas_dict.keys() if col in df_notas.columns]
     disciplinas_com_notas = [col for col in disciplinas_presentes if df_notas[col].notna().any()]
-    
+
     df_apenas_notas = df_notas[disciplinas_com_notas]
 
     media_por_aluno = df_apenas_notas.mean(axis=1)
@@ -53,7 +54,7 @@ def calcular_estatisticas(df_notas, disciplinas_dict, nome_curso):
     estatisticas['total_alunos'] = len(df_notas)
     estatisticas['media_geral_turma'] = media_por_aluno.mean()
     estatisticas['desvio_padrao_medias'] = media_por_aluno.std()
-    
+
     taxa_aprovacao = (df_apenas_notas >= 12.0).all(axis=1).mean() * 100
     estatisticas['taxa_aprovacao_geral'] = f"{taxa_aprovacao:.2f}%"
 
@@ -64,7 +65,7 @@ def calcular_estatisticas(df_notas, disciplinas_dict, nome_curso):
         estatisticas['disciplina_menor_media_nome'] = get_simplified_name(disciplina_menor_code, disciplinas_dict)
         estatisticas['menor_media'] = media_por_disciplina.iloc[0]
         estatisticas['desvio_padrao_disciplina_critica'] = df_apenas_notas[disciplina_menor_code].std()
-        
+
         alunos_abaixo_12 = (df_apenas_notas[disciplina_menor_code] < 12.0).sum()
         estatisticas['alunos_abaixo_12_disciplina_critica'] = alunos_abaixo_12
 
@@ -76,7 +77,7 @@ def calcular_estatisticas(df_notas, disciplinas_dict, nome_curso):
             estatisticas[key] = "N/A"
         for key in ['menor_media', 'maior_media', 'desvio_padrao_disciplina_critica', 'alunos_abaixo_12_disciplina_critica']:
             estatisticas[key] = 0
-            
+
     df_notas['disciplinas_abaixo_12'] = (df_apenas_notas < 12.0).sum(axis=1)
     top_10_criticos = df_notas.sort_values(by='disciplinas_abaixo_12', ascending=False).head(10)
     estatisticas['top_10_alunos_criticos'] = top_10_criticos[['nome', 'disciplinas_abaixo_12']]
@@ -129,10 +130,16 @@ def gerar_comentario_ia(estatisticas, nome_curso):
 
     O tom deve ser profissional e objetivo.
     """
-    
-    api_key = "API_KEY"
+
+    try:
+        # ATUALIZAÇÃO: Lê a chave de API de forma segura a partir dos segredos do Colab
+        api_key = userdata.get('OPEN_IA')
+    except Exception as e:
+        print("AVISO: Não foi possível ler o segredo 'OPENAI_API_KEY'. Certifique-se de que ele foi configurado no Colab.")
+        return "A análise por IA não pôde ser gerada pois a chave de API não foi encontrada."
+
     api_url = "https://api.openai.com/v1/chat/completions"
-    
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -147,13 +154,13 @@ def gerar_comentario_ia(estatisticas, nome_curso):
         response = requests.post(api_url, json=payload, headers=headers, timeout=60)
         response.raise_for_status()
         result = response.json()
-        
+
         if result.get('choices') and result['choices'][0].get('message', {}).get('content'):
             commentary = result['choices'][0]['message']['content']
             return commentary.replace('\n', '<br/>')
         else:
             return "Análise da IA indisponível (resposta inesperada da API)."
-    
+
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401:
              print("Erro 401: Não autorizado. Verifique se sua chave de API da OpenAI é válida.")
@@ -164,7 +171,7 @@ def gerar_comentario_ia(estatisticas, nome_curso):
         else:
             print(f"Erro HTTP ao chamar a API da IA: {e}")
             return "Erro na comunicação com a IA para gerar o comentário."
-            
+
     except requests.exceptions.RequestException as e:
         print(f"Erro de rede ao chamar a API da IA: {e}")
         return "Erro de comunicação com a IA para gerar o comentário."
@@ -177,20 +184,20 @@ def gerar_grafico_distribuicao_notas(df_notas, nome_curso, disciplinas_dict, out
     disciplinas_presentes = [col for col in disciplinas_dict.keys() if col in df_notas.columns and df_notas[col].notna().any()]
     if not disciplinas_presentes:
         return None
-        
+
     df_notas['media_aluno'] = df_notas[disciplinas_presentes].mean(axis=1)
-    
+
     plt.figure(figsize=(10, 6))
     sns.histplot(df_notas['media_aluno'], kde=True, bins=15)
     plt.title(f'Distribuição das Médias Finais - {nome_curso}', fontsize=16)
     plt.xlabel('Média Final do Aluno (0 a 20)', fontsize=12)
     plt.ylabel('Número de Alunos', fontsize=12)
     plt.grid(True, linestyle='--', alpha=0.6)
-    
+
     caminho_grafico = os.path.join(output_dir, f"distribuicao_notas_{nome_curso.lower()}.png")
     plt.savefig(caminho_grafico)
     plt.close()
-    
+
     return caminho_grafico
 
 def gerar_grafico_media_por_disciplina(df_notas, nome_curso, disciplinas_dict, output_dir):
@@ -208,14 +215,14 @@ def gerar_grafico_media_por_disciplina(df_notas, nome_curso, disciplinas_dict, o
     plt.xlabel('Média da Turma (0 a 20)', fontsize=12)
     plt.ylabel('Disciplina', fontsize=12)
     plt.xlim(0, 20)
-    
+
     caminho_grafico = os.path.join(output_dir, f"media_disciplina_{nome_curso.lower()}.png")
     plt.tight_layout()
     plt.savefig(caminho_grafico)
     plt.close()
-    
+
     return caminho_grafico
-    
+
 def gerar_grafico_boxplot_disciplinas(df_notas, nome_curso, disciplinas_dict, output_dir):
     """Gera um boxplot para visualizar a dispersão das notas em cada disciplina."""
     disciplinas_presentes = [col for col in disciplinas_dict.keys() if col in df_notas.columns and df_notas[col].notna().any()]
@@ -231,7 +238,7 @@ def gerar_grafico_boxplot_disciplinas(df_notas, nome_curso, disciplinas_dict, ou
     plt.xlabel('Nota (0 a 20)', fontsize=12)
     plt.ylabel('Disciplina', fontsize=12)
     plt.grid(True, linestyle='--', alpha=0.6, axis='x')
-    
+
     caminho_grafico = os.path.join(output_dir, f"boxplot_disciplinas_{nome_curso.lower()}.png")
     plt.tight_layout()
     plt.savefig(caminho_grafico)
@@ -244,7 +251,7 @@ def gerar_grafico_disciplina_critica(df_notas, disciplina_code, disciplina_nome,
     """Gera um histograma de dispersão para a disciplina com menor média."""
     if disciplina_code == "N/A" or disciplina_code not in df_notas.columns:
         return None
-        
+
     plt.figure(figsize=(10, 6))
     sns.histplot(df_notas[disciplina_code].dropna(), kde=True, bins=10, color='indianred')
     plt.title(f'Dispersão de Notas: {disciplina_nome} ({nome_curso})', fontsize=16)
@@ -252,12 +259,12 @@ def gerar_grafico_disciplina_critica(df_notas, disciplina_code, disciplina_nome,
     plt.ylabel('Número de Alunos', fontsize=12)
     plt.xlim(0, 20)
     plt.grid(True, linestyle='--', alpha=0.6)
-    
+
     safe_filename = re.sub(r'[^a-zA-Z0-9_.-]', '', disciplina_nome)
     caminho_grafico = os.path.join(output_dir, f"dispersao_{safe_filename}_{nome_curso.lower()}.png")
     plt.savefig(caminho_grafico)
     plt.close()
-    
+
     return caminho_grafico
 
 
@@ -279,7 +286,7 @@ def adicionar_cabecalho(canvas, doc):
             display_height = 2.0 * cm
             display_width = display_height / aspect
             # Posiciona o logo à esquerda
-            logo_x = 1.5 * cm 
+            logo_x = 1.5 * cm
             logo_y = altura - 3 * cm
             canvas.drawImage(logo, logo_x, logo_y, width=display_width, height=display_height, preserveAspectRatio=True, mask='auto')
         except Exception as e:
@@ -295,11 +302,11 @@ def adicionar_cabecalho(canvas, doc):
     canvas.drawCentredString(largura / 2.0, y_start, "Serviço Público Federal")
     canvas.drawCentredString(largura / 2.0, y_start - 0.5*cm, "Ministério da Educação")
     canvas.drawCentredString(largura / 2.0, y_start - 1.0*cm, "Centro Federal de Educação Tecnológica de Minas Gerais")
-    
+
     # --- Rodapé ---
     canvas.setFont('Times-Italic', 8)
     canvas.setFillColor(colors.grey)
-    texto_rodape = "Este sistema foi desenvolvido pelo Professor Diego Camargo."
+    texto_rodape = "Desenvolvido pelo Professor Diego Camargo (diegocamargo@cefetmg.br)."
     canvas.drawCentredString(largura / 2.0, 1.5 * cm, texto_rodape)
 
 
@@ -308,7 +315,7 @@ def adicionar_cabecalho(canvas, doc):
 def criar_relatorio_pdf(nome_curso, estatisticas, caminhos_graficos, output_pdf):
     """Cria um relatório em PDF com as estatísticas e gráficos, suportando múltiplas páginas."""
     doc = BaseDocTemplate(output_pdf, pagesize=A4)
-    
+
     largura, altura = A4
     frame = Frame(2.5*cm, 2.5*cm, largura - 5*cm, altura - 6*cm, id='normal')
     template = PageTemplate(id='principal', frames=[frame], onPage=adicionar_cabecalho)
@@ -321,11 +328,11 @@ def criar_relatorio_pdf(nome_curso, estatisticas, caminhos_graficos, output_pdf)
     style_data_capa = ParagraphStyle(name='Date', fontSize=12, alignment=TA_CENTER, spaceBefore=13*cm, fontName='Times-Roman')
     style_h2 = ParagraphStyle(name='h2', parent=styles['h2'], fontName='Times-Bold')
     style_corpo = styles['Justify']
-    
+
     story = []
 
     # --- CAPA ---
-    story.append(Spacer(1, 6*cm)) 
+    story.append(Spacer(1, 6*cm))
     story.append(Paragraph("RELATÓRIO DE ACOMPANHAMENTO ACADÊMICO", style_titulo_capa))
     story.append(Paragraph(f"Curso Técnico em {nome_curso.title()}", style_subtitulo_capa))
     data_pt = format_date(datetime.now(), format="d 'de' MMMM 'de' y", locale='pt_BR')
@@ -353,7 +360,7 @@ def criar_relatorio_pdf(nome_curso, estatisticas, caminhos_graficos, output_pdf)
     ]))
     story.append(tabela_geral)
     story.append(Spacer(1, 1*cm))
-    
+
     story.append(Paragraph("Alunos com Maior Número de Disciplinas Abaixo da Média", style_h2))
     story.append(Spacer(1, 0.5*cm))
     dados_alunos_criticos = [['Aluno', 'Disciplinas < 12']] + estatisticas['top_10_alunos_criticos'].values.tolist()
@@ -371,13 +378,13 @@ def criar_relatorio_pdf(nome_curso, estatisticas, caminhos_graficos, output_pdf)
 
     story.append(Paragraph("Visualizações Gráficas Gerais", style_h2))
     story.append(Spacer(1, 0.5*cm))
-    
+
     graficos_gerais = [
-        caminhos_graficos.get('distribuicao_geral'), 
-        caminhos_graficos.get('media_disciplina'), 
+        caminhos_graficos.get('distribuicao_geral'),
+        caminhos_graficos.get('media_disciplina'),
         caminhos_graficos.get('boxplot_disciplinas')
     ]
-    
+
     for caminho in graficos_gerais:
         if caminho and os.path.exists(caminho):
             img = Image(caminho, width=16*cm, height=11*cm, kind='proportional')
@@ -405,7 +412,7 @@ def criar_relatorio_pdf(nome_curso, estatisticas, caminhos_graficos, output_pdf)
         story.append(PageBreak())
         story.append(Paragraph("Análise da Disciplina com Menor Desempenho", style_h2))
         story.append(Spacer(1, 0.5*cm))
-        
+
         dados_tabela_critica = [
             ["Disciplina:", estatisticas['disciplina_menor_media_nome']],
             ["Média da Turma:", f"{estatisticas['menor_media']:.2f}"],
@@ -464,7 +471,7 @@ if __name__ == "__main__":
         '5802': 'TOPOGRAFIA',
         '5811': 'MÁQUINAS E EQUIPAMENTOS'
     }
-    
+
     cursos = {
         "Transito": {
             "notas_csv": os.path.join(input_path, "notas_transito.csv"),
@@ -481,23 +488,23 @@ if __name__ == "__main__":
     for nome_curso, info in cursos.items():
         print(f"\n--- Processando curso: {nome_curso} ---")
         df_notas, df_faltas = ler_dados(info["notas_csv"], info["faltas_csv"])
-        
+
         if df_notas is not None and not df_notas.empty:
             disciplinas_dict = info["disciplinas_dict"]
-            
+
             estatisticas = calcular_estatisticas(df_notas, disciplinas_dict, nome_curso)
-            
+
             estatisticas['comentario_ia'] = gerar_comentario_ia(estatisticas, nome_curso)
-            
+
             caminhos_graficos = {}
             caminhos_graficos['distribuicao_geral'] = gerar_grafico_distribuicao_notas(df_notas, nome_curso, disciplinas_dict, output_path)
             caminhos_graficos['media_disciplina'] = gerar_grafico_media_por_disciplina(df_notas, nome_curso, disciplinas_dict, output_path)
             caminhos_graficos['boxplot_disciplinas'] = gerar_grafico_boxplot_disciplinas(df_notas, nome_curso, disciplinas_dict, output_path)
             caminhos_graficos['disciplina_critica'] = gerar_grafico_disciplina_critica(
-                df_notas, 
-                estatisticas['disciplina_menor_media_code'], 
-                estatisticas['disciplina_menor_media_nome'], 
-                nome_curso, 
+                df_notas,
+                estatisticas['disciplina_menor_media_code'],
+                estatisticas['disciplina_menor_media_nome'],
+                nome_curso,
                 output_path
             )
 
