@@ -19,7 +19,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'
+          python-version: '3.10'
 
       # 3. Instala as dependências do seu script
       - name: Install dependencies
@@ -33,7 +33,7 @@ jobs:
         with:
           credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
           gdrive-file-id: ${{ github.event.client_payload.file_name_gdrive }}
-          gdrive-folder-id: 'SUA_INFO_AQUI_ID_DA_PASTA_DO_DRIVE'
+          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv?usp=drive_link'
           download-to: './'
 
       # 5. Executa o script Python e captura o nome do arquivo de saída
@@ -43,7 +43,7 @@ jobs:
           API_KEY: ${{ secrets.API_KEY }}
         run: |
           # A última linha do seu script Python deve ser um "print()" com o nome do arquivo gerado
-          echo "file_name=$(python SUA_INFO_AQUI_NOME_DO_SEU_SCRIPT.py)" >> $GITHUB_OUTPUT
+          echo "file_name=$(python 1.Manipulacao.py)" >> $GITHUB_OUTPUT
 
       # 6. Faz o upload do arquivo de resultado para o Google Drive
       - name: Upload output files to Google Drive
@@ -51,7 +51,7 @@ jobs:
         with:
           credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
           upload-from: ${{ steps.run_script.outputs.file_name }}
-          gdrive-folder-id: 'SUA_INFO_AQUI_ID_DA_PASTA_DO_DRIVE'
+          gdrive-folder-id: '12OipLHkXb9m4Id66wKd8u9Ajqbv7XRkC'
       
       # 7. Notifica o n8n que o processo terminou, enviando o nome do arquivo processado
       - name: Notify n8n of completion
