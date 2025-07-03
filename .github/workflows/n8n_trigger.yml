@@ -2,6 +2,7 @@ name: Run Python Scripts from n8n
 
 # Gatilho para ser acionado pelo n8n
 on:
+  workflow_dispatch:
   repository_dispatch:
     types: [run-scripts]
 
