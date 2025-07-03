@@ -33,7 +33,7 @@ jobs:
         with:
           credentials: ${{ secrets.GDRIVE_CREDENTIALS }}
           gdrive-file-id: ${{ github.event.client_payload.file_name_gdrive }}
-          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv?usp=drive_link'
+          gdrive-folder-id: '1bcLY6ehs3Mf4GOSywMWVQWNvkVG6uzbv'
           download-to: './'
 
       # 5. Executa o script Python e captura o nome do arquivo de saída
