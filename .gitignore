@@ -1,0 +1,20 @@
+# Segredos
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Dados sensíveis (mapas de turma, planilhas, relatórios gerados)
+*.xls
+*.xlsx
+*.csv
+*.pdf
+
+# SO / editores
+.DS_Store
+.idea/
+.vscode/

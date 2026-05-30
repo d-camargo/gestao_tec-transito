@@ -1,0 +1,10 @@
+streamlit>=1.33
+pandas>=2.0
+xlrd==2.0.1
+matplotlib>=3.7
+seaborn>=0.13
+reportlab>=4.0
+Babel>=2.12
+requests>=2.31
+tabulate>=0.9
+openpyxl>=3.1
