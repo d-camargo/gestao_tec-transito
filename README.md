@@ -13,18 +13,47 @@ coordenador do EPTNM — não só Trânsito/Estradas.
 
 1. O coordenador informa o **e-mail `@cefetmg.br`** (o serviço só envia para esse
    domínio — é assim que se garante o uso restrito a professores do CEFET).
-2. Informa o **nome do curso** e envia o **Mapa de Turma** (`.xls`).
-3. O app processa notas e faltas, calcula estatísticas, gera gráficos e monta o
-   relatório em PDF.
+2. Envia o **Mapa de Turma** (`.xls`) de **um único bimestre**. O nome do curso,
+   a turma e o bimestre são lidos automaticamente do cabeçalho do arquivo.
+3. O app processa notas e faltas, calcula estatísticas (com o **limiar de
+   aprovação ajustado ao bimestre** — 60% de 20 ou 30 pontos), gera gráficos,
+   destaca os alunos com mais disciplinas críticas e os com mais faltas, e
+   monta o relatório em PDF com **sumário (TOC)**.
 4. O PDF é **enviado por e-mail** ao coordenador. A tela mostra apenas a
    confirmação — nada de download nem dados expostos na página.
 
-### Caso especial: Curso Técnico em Trânsito
+> **Bimestre único**: o app só processa arquivos cujo cabeçalho indica um
+> bimestre individual (1º, 2º, 3º ou 4º Bimestre). Mapas agregados são
+> rejeitados com mensagem clara.
 
-Há um **checkbox na barra lateral**, "Curso Técnico em Trânsito". Quando marcado,
-o app pede **2 arquivos**: o mapa de Trânsito **e** o mapa completo da escola
-(necessário porque o mapa de Trânsito não traz as notas de ensino médio). Para os
-demais cursos, basta **1 arquivo**, e as disciplinas são extraídas dinamicamente
+### Pontuação por bimestre (CEFET-MG)
+
+| Bimestre | Pontuação máxima | Limiar de aprovação parcial (60%) |
+|---|---|---|
+| 1º | 20 | 12,0 |
+| 2º | 30 | 18,0 |
+| 3º | 20 | 12,0 |
+| 4º | 30 | 18,0 |
+
+O limiar é aplicado em todas as estatísticas (taxa de aprovação geral, alunos
+críticos, disciplina mais crítica etc.).
+
+### Análise de faltas
+
+O relatório inclui uma seção de **frequência por sinal estatístico**: para cada
+disciplina mostra média, mediana, P90, desvio padrão e o número de alunos acima
+de P90 / acima de média+2σ. Também lista os 10 alunos com mais faltas no
+bimestre e gráficos de distribuição. Esse sinal **não substitui** o limite legal
+de 25% da carga horária — ele apenas aponta, sem depender do calendário, quem
+merece atenção.
+
+### Caso especial: Trânsito + Estradas (1ª série)
+
+Há um **checkbox na barra lateral**, "Curso integrado Trânsito + Estradas
+(1ª série)". Quando marcado, o app pede **2 arquivos** (mapa de Trânsito e mapa
+de Estradas, porque o de Estradas traz o ensino médio compartilhado) e produz
+**2 relatórios** — um para cada curso — anexados no mesmo e-mail. Para os
+demais cursos, basta **1 arquivo** e as disciplinas são extraídas dinamicamente
 do próprio mapa.
 
 ## 🗂️ Estrutura

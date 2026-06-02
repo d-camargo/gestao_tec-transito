@@ -6,6 +6,15 @@ Versão desacoplada do Google Colab:
 - O PDF é gerado em um buffer (BytesIO), pronto para download.
 - A chave da OpenAI é recebida por parâmetro; se ausente, o comentário por IA
   é simplesmente pulado.
+
+Particularidades do CEFET-MG:
+- Cada bimestre tem pontuação máxima diferente (1º e 3º: 20 pts; 2º e 4º: 30
+  pts), o que muda o limiar de aprovação parcial (60% dos pontos). O limiar é
+  calculado dinamicamente a partir dos metadados do arquivo.
+
+Faltas:
+- Análise por **sinal estatístico** (P90 e média+2σ por disciplina; top-10
+  alunos por faltas totais). Sem dependência de carga horária ou calendário.
 """
 import io
 import re
@@ -19,7 +28,7 @@ import requests
 import seaborn as sns
 from babel.dates import format_date
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
@@ -28,21 +37,54 @@ from reportlab.platypus import (
     BaseDocTemplate, Frame, Image, PageBreak, PageTemplate, Paragraph,
     Spacer, Table, TableStyle,
 )
+from reportlab.platypus.tableofcontents import TableOfContents
+
+
+# --------------------------------
+# Pontuação por bimestre (CEFET-MG)
+# --------------------------------
+MAX_PONTOS_BIMESTRE = {1: 20, 2: 30, 3: 20, 4: 30}
+PERCENTUAL_APROVACAO = 0.60  # 60% dos pontos do bimestre
+
+
+def _limiar_aprovacao(metadados):
+    """Calcula o limiar de aprovação parcial a partir dos metadados.
+
+    Devolve (limiar_float, max_pts_int, bim_num_int). Se metadados estiverem
+    ausentes/desconhecidos, usa o padrão de 12.0 (60% de 20) para não quebrar
+    fluxos legados.
+    """
+    bim = (metadados or {}).get('bimestre_num')
+    if bim not in MAX_PONTOS_BIMESTRE:
+        return 12.0, 20, None
+    max_pts = MAX_PONTOS_BIMESTRE[bim]
+    return max_pts * PERCENTUAL_APROVACAO, max_pts, bim
+
+
+# --------------------------------
+# Utilidades de nome de disciplina
+# --------------------------------
+def get_simplified_name(code, disciplinas_dict):
+    """Devolve o nome legível da disciplina, usando o catálogo/legenda
+    quando disponível. CAIXA ALTA do SIGAA é convertida para Title Case para
+    ficar mais legível em tabelas e gráficos.
+    """
+    full_name = disciplinas_dict.get(str(code), str(code))
+    return full_name.strip().title()
 
 
 # --------------------------------
 # Estatísticas
 # --------------------------------
-def get_simplified_name(code, disciplinas_dict):
-    """Extrai o nome simplificado de uma disciplina a partir do seu código."""
-    full_name = disciplinas_dict.get(str(code), str(code))
-    return re.split(r' - |:', full_name)[0].strip().title()
-
-
-def calcular_estatisticas(df_notas, disciplinas_dict):
-    """Calcula as estatísticas básicas para um curso."""
+def calcular_estatisticas(df_notas, disciplinas_dict, df_faltas=None, metadados=None):
+    """Calcula as estatísticas básicas (notas + faltas) para um curso/bimestre."""
     df_notas = df_notas.copy()
     estatisticas = {}
+    limiar, max_pts, bim_num = _limiar_aprovacao(metadados)
+    estatisticas['limiar_aprovacao'] = limiar
+    estatisticas['max_pontos_bimestre'] = max_pts
+    estatisticas['bimestre_num'] = bim_num
+    estatisticas['metadados'] = metadados or {}
 
     disciplinas_presentes = [c for c in disciplinas_dict if c in df_notas.columns]
     disciplinas_com_notas = [c for c in disciplinas_presentes if df_notas[c].notna().any()]
@@ -53,7 +95,7 @@ def calcular_estatisticas(df_notas, disciplinas_dict):
     estatisticas['media_geral_turma'] = media_por_aluno.mean()
     estatisticas['desvio_padrao_medias'] = media_por_aluno.std()
 
-    taxa_aprovacao = (df_apenas_notas >= 12.0).all(axis=1).mean() * 100
+    taxa_aprovacao = (df_apenas_notas >= limiar).all(axis=1).mean() * 100
     estatisticas['taxa_aprovacao_geral'] = f"{taxa_aprovacao:.2f}%"
 
     media_por_disciplina = df_apenas_notas.mean().sort_values()
@@ -64,8 +106,8 @@ def calcular_estatisticas(df_notas, disciplinas_dict):
             disciplina_menor_code, disciplinas_dict)
         estatisticas['menor_media'] = media_por_disciplina.iloc[0]
         estatisticas['desvio_padrao_disciplina_critica'] = df_apenas_notas[disciplina_menor_code].std()
-        estatisticas['alunos_abaixo_12_disciplina_critica'] = int(
-            (df_apenas_notas[disciplina_menor_code] < 12.0).sum())
+        estatisticas['alunos_abaixo_limiar_disciplina_critica'] = int(
+            (df_apenas_notas[disciplina_menor_code] < limiar).sum())
 
         disciplina_maior_code = media_por_disciplina.index[-1]
         estatisticas['disciplina_maior_media_nome'] = get_simplified_name(
@@ -74,12 +116,12 @@ def calcular_estatisticas(df_notas, disciplinas_dict):
     else:
         for key in ['disciplina_menor_media_nome', 'disciplina_maior_media_nome', 'disciplina_menor_media_code']:
             estatisticas[key] = "N/A"
-        for key in ['menor_media', 'maior_media', 'desvio_padrao_disciplina_critica', 'alunos_abaixo_12_disciplina_critica']:
+        for key in ['menor_media', 'maior_media', 'desvio_padrao_disciplina_critica', 'alunos_abaixo_limiar_disciplina_critica']:
             estatisticas[key] = 0
 
-    df_notas['disciplinas_abaixo_12'] = (df_apenas_notas < 12.0).sum(axis=1)
-    top_10 = df_notas.sort_values(by='disciplinas_abaixo_12', ascending=False).head(10)
-    estatisticas['top_10_alunos_criticos'] = top_10[['nome', 'disciplinas_abaixo_12']]
+    df_notas['disciplinas_abaixo_limiar'] = (df_apenas_notas < limiar).sum(axis=1)
+    top_10 = df_notas.sort_values(by='disciplinas_abaixo_limiar', ascending=False).head(10)
+    estatisticas['top_10_alunos_criticos'] = top_10[['nome', 'disciplinas_abaixo_limiar']]
 
     summary_list = []
     for col in disciplinas_com_notas:
@@ -95,7 +137,63 @@ def calcular_estatisticas(df_notas, disciplinas_dict):
     estatisticas['boxplot_summary_df'] = pd.DataFrame(summary_list)
     estatisticas['disciplinas_com_notas'] = disciplinas_com_notas
 
+    # ----- Faltas (sinal estatístico) -----
+    if df_faltas is not None and not df_faltas.empty:
+        estatisticas.update(_calcular_estatisticas_faltas(df_faltas, disciplinas_dict))
+
     return estatisticas
+
+
+def _calcular_estatisticas_faltas(df_faltas, disciplinas_dict):
+    """Resumo estatístico das faltas: por disciplina (média, mediana, P90, σ,
+    quantidade de alunos acima de P90 e acima de média+2σ) + top-10 alunos
+    com mais faltas totais.
+    """
+    cols = [c for c in disciplinas_dict if c in df_faltas.columns]
+    cols = [c for c in cols if df_faltas[c].notna().any()]
+    if not cols:
+        return {
+            'faltas_disponiveis': False,
+            'faltas_summary_df': pd.DataFrame(),
+            'top_10_faltosos': pd.DataFrame(),
+        }
+
+    df_f = df_faltas[cols].apply(pd.to_numeric, errors='coerce')
+    summary = []
+    for col in cols:
+        s = df_f[col].dropna()
+        if s.empty:
+            continue
+        media = s.mean()
+        mediana = s.median()
+        p90 = s.quantile(0.90)
+        std = s.std()
+        cutoff_sigma = media + 2 * std
+        n_acima_p90 = int((s > p90).sum())
+        n_acima_sigma = int((s > cutoff_sigma).sum())
+        summary.append({
+            'Disciplina': get_simplified_name(col, disciplinas_dict),
+            'Média': f"{media:.1f}",
+            'Mediana': f"{mediana:.1f}",
+            'P90': f"{p90:.1f}",
+            'Desv. Padrão': f"{std:.1f}",
+            'Alunos > P90': n_acima_p90,
+            'Alunos > μ+2σ': n_acima_sigma,
+        })
+    summary_df = pd.DataFrame(summary)
+
+    df_faltas_aluno = df_faltas[['nome'] + cols].copy()
+    df_faltas_aluno['Total Faltas'] = df_f.sum(axis=1)
+    top10 = df_faltas_aluno[['nome', 'Total Faltas']].sort_values(
+        by='Total Faltas', ascending=False).head(10)
+    top10['Total Faltas'] = top10['Total Faltas'].astype(int)
+
+    return {
+        'faltas_disponiveis': True,
+        'faltas_summary_df': summary_df,
+        'top_10_faltosos': top10,
+        '_faltas_cols': cols,
+    }
 
 
 # --------------------------------
@@ -109,24 +207,28 @@ def gerar_comentario_ia(estatisticas, nome_curso, api_key, modelo="gpt-4o-mini")
                 "Configure-a para habilitar este comentário.")
 
     summary_markdown = estatisticas['boxplot_summary_df'].to_markdown(index=False)
+    limiar = estatisticas.get('limiar_aprovacao', 12.0)
+    max_pts = estatisticas.get('max_pontos_bimestre', 20)
+    bim = estatisticas.get('bimestre_num')
     prompt = f"""
     Você é um especialista em análise de dados educacionais. Com base nos dados a seguir, gere uma análise em português. Não faça em formato MarkDown, ou seja, não use * ou #.
 
     **Contexto:**
     - **Curso:** {nome_curso}
+    - **Bimestre:** {bim if bim else 'n/d'} (pontuação máxima {max_pts}, aprovação parcial ≥ {limiar:.1f})
     - **Total de Alunos:** {estatisticas['total_alunos']}
 
     **Análise Geral da Turma:**
-    - **Média Geral (0-20):** {estatisticas['media_geral_turma']:.2f}
+    - **Média Geral (0-{max_pts}):** {estatisticas['media_geral_turma']:.2f}
     - **Dispersão das Médias (Desvio Padrão):** {estatisticas['desvio_padrao_medias']:.2f}
-    - **Taxa de Aprovação Geral (Nota >= 12 em tudo):** {estatisticas['taxa_aprovacao_geral']}
+    - **Taxa de Aprovação Geral (Nota >= {limiar:.1f} em tudo):** {estatisticas['taxa_aprovacao_geral']}
 
     **Resumo Estatístico por Disciplina:**
     {summary_markdown}
 
     **Instruções:**
     1. Primeiro Parágrafo: desempenho geral da turma (média satisfatória? turma homogênea ou heterogênea? taxa de aprovação preocupante?).
-    2. Segundo Parágrafo: analise a disciplina com menor média ({estatisticas['disciplina_menor_media_nome']}) e o número de alunos com nota baixa ({estatisticas['alunos_abaixo_12_disciplina_critica']}).
+    2. Segundo Parágrafo: analise a disciplina com menor média ({estatisticas['disciplina_menor_media_nome']}) e o número de alunos com nota baixa ({estatisticas.get('alunos_abaixo_limiar_disciplina_critica', 0)}).
     3. Terceiro Parágrafo: com base na tabela, aponte disciplinas com desempenho ruim, compare indicadores e sugira melhorias.
 
     O tom deve ser profissional e objetivo.
@@ -158,7 +260,7 @@ def gerar_comentario_ia(estatisticas, nome_curso, api_key, modelo="gpt-4o-mini")
 # --------------------------------
 # Gráficos (retornam figuras matplotlib)
 # --------------------------------
-def grafico_distribuicao_notas(df_notas, nome_curso, disciplinas_dict):
+def grafico_distribuicao_notas(df_notas, nome_curso, disciplinas_dict, max_pts=20):
     presentes = [c for c in disciplinas_dict if c in df_notas.columns and df_notas[c].notna().any()]
     if not presentes:
         return None
@@ -166,14 +268,14 @@ def grafico_distribuicao_notas(df_notas, nome_curso, disciplinas_dict):
     fig, ax = plt.subplots(figsize=(10, 6))
     sns.histplot(media_aluno, kde=True, bins=15, ax=ax)
     ax.set_title(f'Distribuição das Médias Finais - {nome_curso}', fontsize=16)
-    ax.set_xlabel('Média Final do Aluno (0 a 20)', fontsize=12)
+    ax.set_xlabel(f'Média Final do Aluno (0 a {max_pts})', fontsize=12)
     ax.set_ylabel('Número de Alunos', fontsize=12)
     ax.grid(True, linestyle='--', alpha=0.6)
     fig.tight_layout()
     return fig
 
 
-def grafico_media_por_disciplina(df_notas, nome_curso, disciplinas_dict):
+def grafico_media_por_disciplina(df_notas, nome_curso, disciplinas_dict, max_pts=20):
     presentes = [c for c in disciplinas_dict if c in df_notas.columns and df_notas[c].notna().any()]
     if not presentes:
         return None
@@ -182,14 +284,14 @@ def grafico_media_por_disciplina(df_notas, nome_curso, disciplinas_dict):
     fig, ax = plt.subplots(figsize=(12, 8))
     sns.barplot(x=media.values, y=labels, ax=ax)
     ax.set_title(f'Média por Disciplina - {nome_curso}', fontsize=16)
-    ax.set_xlabel('Média da Turma (0 a 20)', fontsize=12)
+    ax.set_xlabel(f'Média da Turma (0 a {max_pts})', fontsize=12)
     ax.set_ylabel('Disciplina', fontsize=12)
-    ax.set_xlim(0, 20)
+    ax.set_xlim(0, max_pts)
     fig.tight_layout()
     return fig
 
 
-def grafico_boxplot_disciplinas(df_notas, nome_curso, disciplinas_dict):
+def grafico_boxplot_disciplinas(df_notas, nome_curso, disciplinas_dict, max_pts=20):
     presentes = [c for c in disciplinas_dict if c in df_notas.columns and df_notas[c].notna().any()]
     if not presentes:
         return None
@@ -199,40 +301,87 @@ def grafico_boxplot_disciplinas(df_notas, nome_curso, disciplinas_dict):
     fig, ax = plt.subplots(figsize=(12, 8))
     sns.boxplot(x='nota', y='disciplina_nome', data=df_melted, orient='h', ax=ax)
     ax.set_title(f'Dispersão de Notas por Disciplina - {nome_curso}', fontsize=16)
-    ax.set_xlabel('Nota (0 a 20)', fontsize=12)
+    ax.set_xlabel(f'Nota (0 a {max_pts})', fontsize=12)
+    ax.set_ylabel('Disciplina', fontsize=12)
+    ax.set_xlim(0, max_pts)
+    ax.grid(True, linestyle='--', alpha=0.6, axis='x')
+    fig.tight_layout()
+    return fig
+
+
+def grafico_disciplina_critica(df_notas, disciplina_code, disciplina_nome, nome_curso, max_pts=20):
+    if disciplina_code == "N/A" or disciplina_code not in df_notas.columns:
+        return None
+    fig, ax = plt.subplots(figsize=(10, 6))
+    sns.histplot(df_notas[disciplina_code].dropna(), kde=True, bins=10, color='indianred', ax=ax)
+    ax.set_title(f'Dispersão de Notas: {disciplina_nome} ({nome_curso})', fontsize=16)
+    ax.set_xlabel(f'Nota na Disciplina (0 a {max_pts})', fontsize=12)
+    ax.set_ylabel('Número de Alunos', fontsize=12)
+    ax.set_xlim(0, max_pts)
+    ax.grid(True, linestyle='--', alpha=0.6)
+    fig.tight_layout()
+    return fig
+
+
+def grafico_faltas_total_por_aluno(df_faltas, nome_curso, cols_disciplinas):
+    cols = [c for c in cols_disciplinas if c in df_faltas.columns]
+    if not cols:
+        return None
+    totais = df_faltas[cols].apply(pd.to_numeric, errors='coerce').sum(axis=1).dropna()
+    if totais.empty:
+        return None
+    fig, ax = plt.subplots(figsize=(10, 6))
+    sns.histplot(totais, kde=True, bins=15, ax=ax, color='steelblue')
+    ax.set_title(f'Distribuição de Faltas Totais por Aluno - {nome_curso}', fontsize=16)
+    ax.set_xlabel('Total de Faltas no Bimestre', fontsize=12)
+    ax.set_ylabel('Número de Alunos', fontsize=12)
+    ax.grid(True, linestyle='--', alpha=0.6)
+    fig.tight_layout()
+    return fig
+
+
+def grafico_faltas_boxplot_disciplina(df_faltas, nome_curso, disciplinas_dict, cols_disciplinas):
+    cols = [c for c in cols_disciplinas if c in df_faltas.columns]
+    if not cols:
+        return None
+    df_melted = df_faltas.melt(value_vars=cols, var_name='disciplina_code', value_name='faltas')
+    df_melted['faltas'] = pd.to_numeric(df_melted['faltas'], errors='coerce')
+    df_melted = df_melted.dropna(subset=['faltas'])
+    if df_melted.empty:
+        return None
+    df_melted['disciplina_nome'] = df_melted['disciplina_code'].apply(
+        lambda c: get_simplified_name(c, disciplinas_dict))
+    fig, ax = plt.subplots(figsize=(12, 8))
+    sns.boxplot(x='faltas', y='disciplina_nome', data=df_melted, orient='h', ax=ax, color='lightcoral')
+    ax.set_title(f'Dispersão de Faltas por Disciplina - {nome_curso}', fontsize=16)
+    ax.set_xlabel('Faltas no Bimestre', fontsize=12)
     ax.set_ylabel('Disciplina', fontsize=12)
     ax.grid(True, linestyle='--', alpha=0.6, axis='x')
     fig.tight_layout()
     return fig
 
 
-def grafico_disciplina_critica(df_notas, disciplina_code, disciplina_nome, nome_curso):
-    if disciplina_code == "N/A" or disciplina_code not in df_notas.columns:
-        return None
-    fig, ax = plt.subplots(figsize=(10, 6))
-    sns.histplot(df_notas[disciplina_code].dropna(), kde=True, bins=10, color='indianred', ax=ax)
-    ax.set_title(f'Dispersão de Notas: {disciplina_nome} ({nome_curso})', fontsize=16)
-    ax.set_xlabel('Nota na Disciplina (0 a 20)', fontsize=12)
-    ax.set_ylabel('Número de Alunos', fontsize=12)
-    ax.set_xlim(0, 20)
-    ax.grid(True, linestyle='--', alpha=0.6)
-    fig.tight_layout()
-    return fig
-
-
-def gerar_todos_graficos(df_notas, nome_curso, disciplinas_dict, estatisticas):
+def gerar_todos_graficos(df_notas, nome_curso, disciplinas_dict, estatisticas, df_faltas=None):
     """Gera todas as figuras e devolve um dicionário {chave: Figure|None}."""
-    return {
-        'distribuicao_geral': grafico_distribuicao_notas(df_notas, nome_curso, disciplinas_dict),
-        'media_disciplina': grafico_media_por_disciplina(df_notas, nome_curso, disciplinas_dict),
-        'boxplot_disciplinas': grafico_boxplot_disciplinas(df_notas, nome_curso, disciplinas_dict),
+    max_pts = estatisticas.get('max_pontos_bimestre', 20)
+    figuras = {
+        'distribuicao_geral': grafico_distribuicao_notas(df_notas, nome_curso, disciplinas_dict, max_pts),
+        'media_disciplina': grafico_media_por_disciplina(df_notas, nome_curso, disciplinas_dict, max_pts),
+        'boxplot_disciplinas': grafico_boxplot_disciplinas(df_notas, nome_curso, disciplinas_dict, max_pts),
         'disciplina_critica': grafico_disciplina_critica(
             df_notas,
             estatisticas.get('disciplina_menor_media_code', 'N/A'),
             estatisticas.get('disciplina_menor_media_nome', 'N/A'),
             nome_curso,
+            max_pts,
         ),
     }
+    if df_faltas is not None and estatisticas.get('faltas_disponiveis'):
+        cols = estatisticas.get('_faltas_cols', [])
+        figuras['faltas_total_aluno'] = grafico_faltas_total_por_aluno(df_faltas, nome_curso, cols)
+        figuras['faltas_boxplot_disciplina'] = grafico_faltas_boxplot_disciplina(
+            df_faltas, nome_curso, disciplinas_dict, cols)
+    return figuras
 
 
 def _fig_para_imagem(fig):
@@ -244,7 +393,7 @@ def _fig_para_imagem(fig):
 
 
 # --------------------------------
-# Relatório PDF (em memória)
+# Relatório PDF (em memória) com sumário (TOC)
 # --------------------------------
 def _cabecalho_factory(logo_path=None):
     def adicionar_cabecalho(canvas, doc):
@@ -281,10 +430,29 @@ def _cabecalho_factory(logo_path=None):
     return adicionar_cabecalho
 
 
+class _DocComSumario(BaseDocTemplate):
+    """BaseDocTemplate que captura os títulos H1/H2 do story e popula o TOC.
+
+    O ReportLab dispara `afterFlowable` após cada flowable; identificamos os
+    Paragraphs estilizados como ``H1Sumario`` ou ``H2Sumario`` e emitimos um
+    ``TOCEntry`` com o nível, texto e número de página correspondente.
+    """
+
+    def afterFlowable(self, flowable):
+        if not isinstance(flowable, Paragraph):
+            return
+        style_name = flowable.style.name
+        text = flowable.getPlainText()
+        if style_name == 'H1Sumario':
+            self.notify('TOCEntry', (0, text, self.page))
+        elif style_name == 'H2Sumario':
+            self.notify('TOCEntry', (1, text, self.page))
+
+
 def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
     """Cria o relatório em PDF e devolve um BytesIO pronto para download."""
     buffer = io.BytesIO()
-    doc = BaseDocTemplate(buffer, pagesize=A4)
+    doc = _DocComSumario(buffer, pagesize=A4)
     largura, altura = A4
     frame = Frame(2.5 * cm, 2.5 * cm, largura - 5 * cm, altura - 6 * cm, id='normal')
     doc.addPageTemplates([
@@ -303,12 +471,24 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
                                      fontName='Times-Roman')
     style_data = ParagraphStyle(name='DataCapa', fontSize=12, alignment=TA_CENTER,
                                 spaceBefore=13 * cm, fontName='Times-Roman')
-    style_h2 = ParagraphStyle(name='h2custom', parent=styles['h2'], fontName='Times-Bold')
+    # Estilos H1/H2 que o `_DocComSumario` registra no TOC.
+    style_h1 = ParagraphStyle(name='H1Sumario', parent=styles['h1'],
+                              fontName='Times-Bold', textColor=colors.HexColor('#002060'),
+                              spaceBefore=12, spaceAfter=8)
+    style_h2 = ParagraphStyle(name='H2Sumario', parent=styles['h2'],
+                              fontName='Times-Bold')
     style_corpo = styles['Justify']
+    style_caption = ParagraphStyle(name='Caption', parent=styles['BodyText'],
+                                   alignment=TA_LEFT, fontName='Times-Italic',
+                                   fontSize=9, textColor=colors.grey)
+    style_toc_titulo = ParagraphStyle(name='TocTitulo', fontSize=16, alignment=TA_CENTER,
+                                      fontName='Times-Bold',
+                                      textColor=colors.HexColor('#002060'),
+                                      spaceAfter=0.8 * cm)
 
     story = []
 
-    # Capa
+    # --- Capa ---
     story.append(Spacer(1, 6 * cm))
     story.append(Paragraph("RELATÓRIO DE ACOMPANHAMENTO ACADÊMICO", style_titulo))
     story.append(Paragraph(f"Curso Técnico em {nome_curso.title()}", style_subtitulo))
@@ -316,17 +496,42 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
     story.append(Paragraph(data_pt, style_data))
     story.append(PageBreak())
 
-    # Estatísticas gerais
-    story.append(Paragraph("Estatísticas Gerais da Turma", style_h2))
-    story.append(Spacer(1, 0.5 * cm))
+    # --- Sumário ---
+    story.append(Paragraph("Sumário", style_toc_titulo))
+    toc = TableOfContents()
+    toc.levelStyles = [
+        ParagraphStyle(fontName='Times-Bold', fontSize=12, name='TOCH1',
+                       leftIndent=0, firstLineIndent=-20, spaceBefore=10, leading=16),
+        ParagraphStyle(fontName='Times-Roman', fontSize=10, name='TOCH2',
+                       leftIndent=20, firstLineIndent=-20, spaceBefore=4, leading=14),
+    ]
+    story.append(toc)
+    story.append(PageBreak())
+
+    # --- Estatísticas gerais ---
+    limiar = estatisticas.get('limiar_aprovacao', 12.0)
+    max_pts = estatisticas.get('max_pontos_bimestre', 20)
+    bim = estatisticas.get('bimestre_num')
+    meta = estatisticas.get('metadados', {}) or {}
+
+    story.append(Paragraph("Estatísticas Gerais da Turma", style_h1))
+    if bim:
+        story.append(Paragraph(
+            f"Bimestre: <b>{bim}º</b> · Pontuação máxima: <b>{max_pts}</b> · "
+            f"Aprovação parcial (≥ 60%): <b>{limiar:.1f}</b>",
+            style_caption,
+        ))
+    story.append(Spacer(1, 0.4 * cm))
     dados_gerais = [
         ['Total de Alunos:', estatisticas['total_alunos']],
         ['Média Geral da Turma:', f"{estatisticas['media_geral_turma']:.2f}"],
         ['Desvio Padrão das Médias:', f"{estatisticas['desvio_padrao_medias']:.2f}"],
-        ['Taxa de Aprovação (>= 12.0 em tudo):', estatisticas['taxa_aprovacao_geral']],
+        [f'Taxa de Aprovação (≥ {limiar:.1f} em tudo):', estatisticas['taxa_aprovacao_geral']],
         ['Disciplina com Maior Média:', f"{estatisticas['disciplina_maior_media_nome']} ({estatisticas['maior_media']:.2f})"],
         ['Disciplina com Menor Média:', f"{estatisticas['disciplina_menor_media_nome']} ({estatisticas['menor_media']:.2f})"],
     ]
+    if meta.get('turma'):
+        dados_gerais.insert(0, ['Turma:', meta['turma']])
     tabela_geral = Table(dados_gerais, colWidths=[7 * cm, 9 * cm])
     tabela_geral.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), colors.beige),
@@ -337,10 +542,12 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
     story.append(tabela_geral)
     story.append(Spacer(1, 1 * cm))
 
-    # Alunos críticos
-    story.append(Paragraph("Alunos com Maior Número de Disciplinas Abaixo da Média", style_h2))
-    story.append(Spacer(1, 0.5 * cm))
-    dados_criticos = [['Aluno', 'Disciplinas < 12']] + estatisticas['top_10_alunos_criticos'].values.tolist()
+    # --- Alunos críticos (notas) ---
+    story.append(Paragraph(
+        f"Alunos com Maior Número de Disciplinas Abaixo do Limiar (<{limiar:.1f})", style_h2))
+    story.append(Spacer(1, 0.4 * cm))
+    dados_criticos = [['Aluno', f'Disciplinas < {limiar:.1f}']] + \
+        estatisticas['top_10_alunos_criticos'].values.tolist()
     tabela_criticos = Table(dados_criticos, colWidths=[12 * cm, 4 * cm])
     tabela_criticos.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.darkred),
@@ -353,18 +560,18 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
     story.append(tabela_criticos)
     story.append(Spacer(1, 1 * cm))
 
-    # Gráficos gerais
-    story.append(Paragraph("Visualizações Gráficas Gerais", style_h2))
-    story.append(Spacer(1, 0.5 * cm))
+    # --- Gráficos gerais ---
+    story.append(Paragraph("Visualizações Gráficas Gerais", style_h1))
+    story.append(Spacer(1, 0.4 * cm))
     for chave in ['distribuicao_geral', 'media_disciplina', 'boxplot_disciplinas']:
         fig = figuras.get(chave)
         if fig is not None:
             story.append(Image(_fig_para_imagem(fig), width=16 * cm, height=11 * cm, kind='proportional'))
             story.append(Spacer(1, 1 * cm))
 
-    # Resumo estatístico por disciplina
-    story.append(Paragraph("Resumo Estatístico por Disciplina", style_h2))
-    story.append(Spacer(1, 0.5 * cm))
+    # --- Resumo estatístico por disciplina ---
+    story.append(Paragraph("Resumo Estatístico por Disciplina", style_h1))
+    story.append(Spacer(1, 0.4 * cm))
     df_summary = estatisticas['boxplot_summary_df']
     table_data = [df_summary.columns.tolist()] + df_summary.values.tolist()
     tabela_summary = Table(table_data, colWidths=[4.5 * cm, 2 * cm, 2 * cm, 2.5 * cm, 2 * cm, 2 * cm])
@@ -380,17 +587,18 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
     story.append(tabela_summary)
     story.append(Spacer(1, 1 * cm))
 
-    # Disciplina crítica
+    # --- Disciplina crítica ---
     fig_critica = figuras.get('disciplina_critica')
     if fig_critica is not None:
         story.append(PageBreak())
-        story.append(Paragraph("Análise da Disciplina com Menor Desempenho", style_h2))
-        story.append(Spacer(1, 0.5 * cm))
+        story.append(Paragraph("Análise da Disciplina com Menor Desempenho", style_h1))
+        story.append(Spacer(1, 0.4 * cm))
         dados_critica = [
             ["Disciplina:", estatisticas['disciplina_menor_media_nome']],
             ["Média da Turma:", f"{estatisticas['menor_media']:.2f}"],
             ["Desvio Padrão:", f"{estatisticas['desvio_padrao_disciplina_critica']:.2f}"],
-            ["Alunos com Nota < 12.0:", f"{estatisticas['alunos_abaixo_12_disciplina_critica']}"],
+            [f"Alunos com Nota < {limiar:.1f}:",
+             f"{estatisticas.get('alunos_abaixo_limiar_disciplina_critica', 0)}"],
         ]
         tabela_critica = Table(dados_critica, colWidths=[7 * cm, 9 * cm])
         tabela_critica.setStyle(TableStyle([
@@ -403,13 +611,75 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
         story.append(Spacer(1, 0.5 * cm))
         story.append(Image(_fig_para_imagem(fig_critica), width=16 * cm, height=11 * cm, kind='proportional'))
 
-    # Comentário da IA
+    # --- Frequência (Faltas) ---
+    if estatisticas.get('faltas_disponiveis'):
+        story.append(PageBreak())
+        story.append(Paragraph("Análise de Frequência (sinal estatístico)", style_h1))
+        story.append(Paragraph(
+            "A análise abaixo destaca alunos cuja quantidade de faltas se "
+            "afasta do comportamento típico da turma. Os limites estatísticos "
+            "(P90 e μ+2σ) <b>não substituem</b> o limite legal de 25% da carga "
+            "horária — eles apenas sinalizam, sem depender do calendário, quem "
+            "merece um olhar atento.",
+            style_corpo,
+        ))
+        story.append(Spacer(1, 0.5 * cm))
+
+        story.append(Paragraph("Top 10 Alunos com Mais Faltas no Bimestre", style_h2))
+        story.append(Spacer(1, 0.3 * cm))
+        top10 = estatisticas.get('top_10_faltosos', pd.DataFrame())
+        if not top10.empty:
+            dados_falt = [['Aluno', 'Total de Faltas']] + top10.values.tolist()
+            tabela_falt = Table(dados_falt, colWidths=[12 * cm, 4 * cm])
+            tabela_falt.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7a3030')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTNAME', (0, 0), (-1, 0), 'Times-Bold'),
+                ('FONTNAME', (0, 1), (-1, -1), 'Times-Roman'),
+            ]))
+            story.append(tabela_falt)
+            story.append(Spacer(1, 0.8 * cm))
+
+        story.append(Paragraph("Resumo de Faltas por Disciplina", style_h2))
+        story.append(Spacer(1, 0.3 * cm))
+        df_faltas_summary = estatisticas.get('faltas_summary_df', pd.DataFrame())
+        if not df_faltas_summary.empty:
+            cols_widths = [4.5 * cm, 1.6 * cm, 1.6 * cm, 1.4 * cm, 2 * cm, 2 * cm, 2.4 * cm]
+            table_data = [df_faltas_summary.columns.tolist()] + df_faltas_summary.values.tolist()
+            tabela_falt_disc = Table(table_data, colWidths=cols_widths)
+            tabela_falt_disc.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7a3030')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTNAME', (0, 0), (-1, 0), 'Times-Bold'),
+                ('FONTNAME', (0, 1), (-1, -1), 'Times-Roman'),
+                ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ]))
+            story.append(tabela_falt_disc)
+            story.append(Spacer(1, 0.8 * cm))
+
+        for chave in ['faltas_total_aluno', 'faltas_boxplot_disciplina']:
+            fig = figuras.get(chave)
+            if fig is not None:
+                story.append(Image(_fig_para_imagem(fig), width=16 * cm, height=11 * cm, kind='proportional'))
+                story.append(Spacer(1, 0.8 * cm))
+
+    # --- Comentário da IA ---
     if estatisticas.get('comentario_ia'):
         story.append(PageBreak())
-        story.append(Paragraph("Análise e Comentários (Gerado por Inteligência Artificial)", style_h2))
-        story.append(Spacer(1, 0.5 * cm))
+        story.append(Paragraph("Análise e Comentários (Gerado por Inteligência Artificial)", style_h1))
+        story.append(Spacer(1, 0.4 * cm))
         story.append(Paragraph(estatisticas['comentario_ia'], style_corpo))
 
-    doc.build(story)
+    # `multiBuild` faz duas passadas: a primeira coleta as entradas do TOC, a
+    # segunda monta o documento final já com os números de página corretos.
+    doc.multiBuild(story)
+    # Libera as figuras matplotlib para não acumular memória entre relatórios.
+    for fig in figuras.values():
+        if fig is not None:
+            plt.close(fig)
     buffer.seek(0)
     return buffer
