@@ -20,6 +20,7 @@ from core.manipulacao import (
     processar_curso_generico,
     processar_transito_estradas,
 )
+from core.usage_tracker import registrar_uso
 
 st.set_page_config(
     page_title="Gestão Acadêmica EPTNM — CEFET-MG",
@@ -224,6 +225,9 @@ def processar_e_enviar():
     except Exception as e:
         st.error(f"Não foi possível enviar o e-mail: {e}")
         return
+
+    bim = conjuntos_validos[0][3].get('bimestre_num') if conjuntos_validos else None
+    registrar_uso(cursos, bim, email.strip(), st.secrets)
 
     cursos_fmt = " e ".join(f"**{c}**" for c in cursos)
     st.success(f"✅ Relatório(s) — {cursos_fmt} — enviado(s) para **{email.strip()}**.")

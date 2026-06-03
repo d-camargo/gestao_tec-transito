@@ -8,3 +8,5 @@ Babel>=2.12
 requests>=2.31
 tabulate>=0.9
 openpyxl>=3.1
+gspread>=6.0
+google-auth>=2.28
