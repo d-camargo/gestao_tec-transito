@@ -10,8 +10,13 @@ cada curso.
 """
 import os
 import re
+import subprocess
 
 import streamlit as st
+
+# Versão "humana" do app. Incremente ao publicar mudanças relevantes; o commit
+# do Git (mostrado ao lado) é o identificador exato do que está no ar.
+APP_VERSION = "1.1.0"
 
 from core import relatorios
 from core.email_sender import DOMINIO_INSTITUCIONAL, email_valido, enviar_relatorio
@@ -45,12 +50,47 @@ def _slug(texto):
     return re.sub(r'\W+', '_', (texto or 'curso').strip().lower()).strip('_') or 'curso'
 
 
+@st.cache_data(show_spinner=False)
+def _build_info():
+    """Identifica o build em execução (commit + data) para conferir o deploy.
+
+    Lê do Git no diretório do app — funciona no Streamlit Cloud, que publica a
+    partir de um clone do repositório. Retorna ('', '') se o Git não estiver
+    disponível (ex.: execução fora de um repositório)."""
+    base = os.path.dirname(os.path.abspath(__file__))
+
+    def _git(*args):
+        try:
+            return subprocess.check_output(
+                ["git", *args], cwd=base,
+                stderr=subprocess.DEVNULL, text=True, timeout=3,
+            ).strip()
+        except Exception:
+            return ""
+
+    commit = _git("rev-parse", "--short", "HEAD")
+    data_commit = _git("show", "-s", "--format=%cd", "--date=short", "HEAD")
+    return commit, data_commit
+
+
+def _versao_label():
+    """Monta o rótulo de versão exibido na página."""
+    commit, data_commit = _build_info()
+    partes = [f"Versão {APP_VERSION}"]
+    if commit:
+        partes.append(f"commit `{commit}`")
+    if data_commit:
+        partes.append(data_commit)
+    return " · ".join(partes)
+
+
 # --------------------------------
 # Cabeçalho
 # --------------------------------
 st.title("🎓 Gestão Acadêmica EPTNM — CEFET-MG")
 st.caption("Educação Profissional Técnica de Nível Médio · Centro Federal de "
            "Educação Tecnológica de Minas Gerais")
+st.caption(f"🏷️ {_versao_label()}")
 st.markdown(
     "Informe seu e-mail institucional e envie o **Mapa de Turma** (`.xls`). "
     "O relatório de acompanhamento acadêmico será gerado e **enviado para o seu "
@@ -108,6 +148,9 @@ with st.sidebar:
             "usados para treinar** os modelos — ainda assim, por isso, **nenhum "
             "nome ou nota individual** é compartilhado."
         )
+
+    st.divider()
+    st.caption(f"🏷️ {_versao_label()}")
 
 # --------------------------------
 # Formulário
