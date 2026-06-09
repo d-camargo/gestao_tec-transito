@@ -3,6 +3,9 @@
 Centralizado aqui para ser reutilizado tanto na manipulação dos dados
 quanto na geração dos relatórios.
 """
+import re
+import unicodedata
+from collections import Counter
 
 disciplinas_ensino_medio = {
     '1DEFISD.006': 'EDUCAÇÃO FÍSICA - 2ª SÉRIE',
@@ -46,3 +49,53 @@ def catalogo_nomes_conhecidos() -> dict:
         **disciplinas_tecnicas_transito,
         **disciplinas_tecnicas_estradas,
     }
+
+
+# --------------------------------
+# Classificação de disciplinas por nome (independente do código)
+# --------------------------------
+# Os códigos das disciplinas mudam a cada série/estrutura curricular do SIGAA
+# (ex.: 'MATEMÁTICA - 2ª SÉRIE' = '1MAT.006', mas '...3ª SÉRIE' = 'MAT1.001').
+# Por isso, a identificação do ensino médio e da série é feita pelo **nome**
+# (legenda do XLS), não por uma lista fixa de códigos.
+_RE_SERIE = re.compile(r'(\d)\D{0,4}serie')
+
+# Palavras-chave que caracterizam disciplinas do ensino médio (núcleo comum).
+_EM_KEYWORDS = (
+    'matematica', 'portugues', 'ingles', 'lingua estrangeira', 'espanhol',
+    'quimica', 'fisica', 'biologia', 'historia', 'geografia', 'sociologia',
+    'filosofia', 'redacao', 'arte', 'ciencias', 'literatura',
+)
+
+
+def _normalizar(txt) -> str:
+    """Minúsculas e sem acentos, para comparação tolerante de nomes."""
+    txt = '' if txt is None else str(txt)
+    txt = ''.join(
+        c for c in unicodedata.normalize('NFD', txt)
+        if unicodedata.category(c) != 'Mn'
+    )
+    return txt.lower().strip()
+
+
+def eh_disciplina_ensino_medio(nome) -> bool:
+    """Indica se o nome de uma disciplina corresponde ao ensino médio (núcleo
+    comum), seja pelo sufixo "Nª SÉRIE" ou por uma palavra-chave conhecida."""
+    n = _normalizar(nome)
+    if not n:
+        return False
+    if _RE_SERIE.search(n):
+        return True
+    return any(k in n for k in _EM_KEYWORDS)
+
+
+def detectar_serie(disciplinas_dict):
+    """Deduz a série (1, 2 ou 3) a partir dos nomes das disciplinas do ensino
+    médio (ex.: "... - 3ª SÉRIE"). Devolve int 1..3 ou ``None`` se não for
+    possível inferir (ex.: mapa só com disciplinas técnicas)."""
+    contagem = Counter()
+    for nome in (disciplinas_dict or {}).values():
+        m = _RE_SERIE.search(_normalizar(nome))
+        if m:
+            contagem[int(m.group(1))] += 1
+    return contagem.most_common(1)[0][0] if contagem else None

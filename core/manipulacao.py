@@ -15,7 +15,8 @@ import pandas as pd
 
 from .disciplinas import (
     catalogo_nomes_conhecidos,
-    disciplinas_ensino_medio,
+    detectar_serie,
+    eh_disciplina_ensino_medio,
 )
 
 
@@ -244,12 +245,15 @@ def ajustar_dataframe(df, disciplinas_dict):
     return df[colunas_finais]
 
 
-def preencher_dados_faltantes(df_principal, df_fonte_para_preencher):
+def preencher_dados_faltantes(df_principal, df_fonte_para_preencher, cols_ensino_medio):
     """Preenche dados (notas ou faltas) de ensino médio no DF principal usando
-    um DF fonte já processado."""
-    cols_para_adicionar = ['matricula'] + list(disciplinas_ensino_medio.keys())
-    cols_existentes = [c for c in cols_para_adicionar if c in df_fonte_para_preencher.columns]
-    df_fonte_subset = df_fonte_para_preencher[cols_existentes]
+    um DF fonte já processado.
+
+    ``cols_ensino_medio`` é a lista de **códigos** das disciplinas de ensino
+    médio a herdar (identificadas dinamicamente pelo nome na legenda, e não por
+    uma lista fixa — os códigos mudam a cada série/estrutura curricular)."""
+    cols_existentes = [c for c in cols_ensino_medio if c in df_fonte_para_preencher.columns]
+    df_fonte_subset = df_fonte_para_preencher[['matricula'] + cols_existentes]
     return pd.merge(df_principal, df_fonte_subset, on='matricula', how='left')
 
 
@@ -301,6 +305,7 @@ def processar_curso_generico(arquivo_xls):
     legenda = extrair_legenda(df_bruto)
     disciplinas_dict = disciplinas_dict_de_df(df_notas, legenda)
     metadados['curso_amigavel'] = _curso_amigavel(metadados.get('curso'))
+    metadados['serie'] = detectar_serie(disciplinas_dict)
     return df_notas, df_faltas, disciplinas_dict, metadados
 
 
@@ -332,9 +337,20 @@ def processar_transito_estradas(arquivo_transito_xls, arquivo_estradas_xls):
     df_notas_tt, df_faltas_tt = extrair_dataframes(df_bruto_tt)
     df_notas_est, df_faltas_est = extrair_dataframes(df_bruto_est)
 
+    legenda_tt_arq = extrair_legenda(df_bruto_tt)
+    legenda_est_arq = extrair_legenda(df_bruto_est)
+
+    # O mapa de Trânsito traz apenas as disciplinas técnicas; as do ensino médio
+    # vêm do mapa de Estradas. Identificamos quais colunas de Estradas são de
+    # ensino médio pelo **nome** (legenda), pois os códigos variam entre séries
+    # — uma lista fixa de códigos quebrava na 1ª/3ª série (ver disciplinas.py).
+    disc_est_completo = disciplinas_dict_de_df(df_notas_est, legenda_est_arq)
+    cols_ensino_medio = [c for c, nome in disc_est_completo.items()
+                         if eh_disciplina_ensino_medio(nome)]
+
     # Trânsito herda colunas de ensino médio a partir do mapa de Estradas.
-    df_notas_tt = preencher_dados_faltantes(df_notas_tt, df_notas_est)
-    df_faltas_tt = preencher_dados_faltantes(df_faltas_tt, df_faltas_est)
+    df_notas_tt = preencher_dados_faltantes(df_notas_tt, df_notas_est, cols_ensino_medio)
+    df_faltas_tt = preencher_dados_faltantes(df_faltas_tt, df_faltas_est, cols_ensino_medio)
 
     # Estradas perde os alunos que já estão em Trânsito (não há sobreposição
     # real, mas garantimos a separação).
@@ -343,8 +359,6 @@ def processar_transito_estradas(arquivo_transito_xls, arquivo_estradas_xls):
     df_faltas_est = df_faltas_est[~df_faltas_est['matricula'].isin(matriculas_tt)].reset_index(drop=True)
 
     # Mescla legendas: o curso destino tem prioridade sobre a herança.
-    legenda_tt_arq = extrair_legenda(df_bruto_tt)
-    legenda_est_arq = extrair_legenda(df_bruto_est)
     legenda_tt = {**legenda_est_arq, **legenda_tt_arq}
     legenda_est = legenda_est_arq
 
@@ -353,6 +367,8 @@ def processar_transito_estradas(arquivo_transito_xls, arquivo_estradas_xls):
 
     meta_tt['curso_amigavel'] = _curso_amigavel(meta_tt.get('curso')) or 'Trânsito'
     meta_est['curso_amigavel'] = _curso_amigavel(meta_est.get('curso')) or 'Estradas'
+    meta_tt['serie'] = detectar_serie(disciplinas_tt)
+    meta_est['serie'] = detectar_serie(disciplinas_est)
 
     return [
         (df_notas_tt, df_faltas_tt, disciplinas_tt, meta_tt),

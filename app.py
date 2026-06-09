@@ -157,7 +157,9 @@ def _gerar_pdf_para_conjunto(conjunto, usar_ia, api_key):
         nome_curso, estat, figuras, logo_path=logo)
 
     bim = metadados.get('bimestre_num') or 'X'
-    nome_arquivo = f"relatorio_{_slug(nome_curso)}_bim{bim}.pdf"
+    serie = metadados.get('serie')
+    serie_tag = f"_{serie}aserie" if serie else ""
+    nome_arquivo = f"relatorio_{_slug(nome_curso)}{serie_tag}_bim{bim}.pdf"
     return nome_arquivo, pdf_buffer, nome_curso
 
 

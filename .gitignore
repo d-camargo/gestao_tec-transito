@@ -1,5 +1,7 @@
 # Segredos
 .streamlit/secrets.toml
+# Chave de service account do Google (não versionar)
+gestaotec-*.json
 
 # Python
 __pycache__/
