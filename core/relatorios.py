@@ -166,6 +166,11 @@ def calcular_estatisticas(df_notas, disciplinas_dict, df_faltas=None, metadados=
     if df_faltas is not None and not df_faltas.empty:
         estatisticas.update(_calcular_estatisticas_faltas(df_faltas, disciplinas_dict))
 
+    # ----- Risco de Repetência -----
+    estatisticas['top_10_risco_repeticao'] = _calcular_risco_repeticao(
+        df_notas, df_faltas, estatisticas, limiar, disciplinas_dict
+    )
+
     return estatisticas
 
 
@@ -219,6 +224,98 @@ def _calcular_estatisticas_faltas(df_faltas, disciplinas_dict):
         'top_10_faltosos': top10,
         '_faltas_cols': cols,
     }
+
+
+def _calcular_risco_repeticao(df_notas, df_faltas, estatisticas, limiar, disciplinas_dict):
+    """Calcula por aluno o índice de risco de repetência (0-100%) e retorna os 10 mais críticos."""
+    # 1. Componente Notas (C_notas):
+    disciplinas_com_notas = estatisticas.get('disciplinas_com_notas', [])
+    if disciplinas_com_notas:
+        df_apenas_notas = df_notas[disciplinas_com_notas]
+        total_validas = df_apenas_notas.notna().sum(axis=1)
+        abaixo_limiar = (df_apenas_notas < limiar).sum(axis=1)
+        
+        # Evita divisão por zero
+        c_notas = abaixo_limiar.div(total_validas).fillna(0.0)
+    else:
+        c_notas = pd.Series(0.0, index=df_notas.index)
+        total_validas = pd.Series(0, index=df_notas.index)
+        abaixo_limiar = pd.Series(0, index=df_notas.index)
+
+    # 2. Componente Faltas (C_faltas):
+    has_faltas = (
+        df_faltas is not None 
+        and not df_faltas.empty 
+        and estatisticas.get('faltas_disponiveis', False)
+    )
+    
+    p90_faltas = 0.0
+    if has_faltas:
+        cols_faltas = estatisticas.get('_faltas_cols', [])
+        df_f = df_faltas[cols_faltas].apply(pd.to_numeric, errors='coerce')
+        total_faltas_serie = df_f.sum(axis=1)
+        p90_faltas = total_faltas_serie.quantile(0.90)
+        
+        # Mapeia faltas para df_notas via nome do aluno
+        faltas_map = pd.Series(total_faltas_serie.values, index=df_faltas['nome'])
+        faltas_aluno = df_notas['nome'].map(faltas_map).fillna(0.0)
+        
+        if p90_faltas > 0:
+            c_faltas = (faltas_aluno / p90_faltas).clip(upper=1.0)
+        else:
+            c_faltas = pd.Series(0.0, index=df_notas.index)
+    else:
+        faltas_aluno = pd.Series(0.0, index=df_notas.index)
+        c_faltas = pd.Series(0.0, index=df_notas.index)
+
+    # 3. Pesos e Integração:
+    if has_faltas and p90_faltas > 0:
+        indice_risco = 0.7 * c_notas + 0.3 * c_faltas
+    else:
+        indice_risco = 1.0 * c_notas
+
+    risco_percent = indice_risco * 100
+
+    # Cria DataFrame temporário para ordenação e desempate
+    df_temp = pd.DataFrame({
+        'nome': df_notas['nome'],
+        'risco_percent': risco_percent,
+        'abaixo_limiar': abaixo_limiar,
+        'faltas_aluno': faltas_aluno
+    })
+
+    # Critérios de desempate:
+    # 1. Maior risco_percent (descending)
+    # 2. Maior abaixo_limiar (descending)
+    # 3. Maior faltas_aluno (descending)
+    # 4. Ordem alfabética do nome do aluno (ascending)
+    df_sorted = df_temp.sort_values(
+        by=['risco_percent', 'abaixo_limiar', 'faltas_aluno', 'nome'],
+        ascending=[False, False, False, True]
+    )
+
+    # Seleciona os 10 mais críticos
+    top_10 = df_sorted.head(10).copy()
+
+    # Gera o principal motivo heurístico
+    motivos = []
+    for _, row in top_10.iterrows():
+        n_disc = int(row['abaixo_limiar'])
+        n_faltas = int(row['faltas_aluno'])
+        
+        if n_disc > 0 and n_faltas > 0:
+            motivos.append(f"{n_disc} disc. abaixo do limiar e {n_faltas} faltas")
+        elif n_disc > 0:
+            motivos.append(f"{n_disc} disc. abaixo do limiar")
+        elif n_faltas > 0:
+            motivos.append(f"{n_faltas} faltas")
+        else:
+            motivos.append("Sem fatores de risco")
+            
+    top_10['principal_motivo'] = motivos
+
+    # Retorna DataFrame com as colunas especificadas no plano
+    return top_10[['nome', 'risco_percent', 'principal_motivo']]
 
 
 # --------------------------------
@@ -595,6 +692,33 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
     story.append(toc)
     quebra_pagina()
 
+    # Decisão de Design - Passo 1 do PLAN.md:
+    # Fórmula Exata do Índice de Risco de Repetência (%):
+    #
+    # Componentes:
+    # 1. Componente Notas (C_notas):
+    #    Proporção de disciplinas abaixo do limiar (60% da nota do bimestre).
+    #    C_notas = (disciplinas_abaixo_limiar) / (total_de_disciplinas_com_notas_validas)
+    #
+    # 2. Componente Faltas (C_faltas):
+    #    Faltas do aluno normalizadas pelo P90 (Percentil 90) de faltas da turma.
+    #    C_faltas = min(1.0, faltas_do_aluno / P90_faltas_da_turma)
+    #    Se P90_faltas_da_turma for 0 ou indisponível, C_faltas = 0.
+    #
+    # Pesos e Integração:
+    # - Se dados de faltas estiverem disponíveis (estatisticas['faltas_disponiveis'] é True) e P90_faltas_da_turma > 0:
+    #   Índice_Risco = 0.7 * C_notas + 0.3 * C_faltas
+    # - Se os dados de faltas não estiverem disponíveis ou P90_faltas_da_turma for 0:
+    #   Índice_Risco = 1.0 * C_notas
+    #
+    # Escala:
+    # - Índice final = Índice_Risco * 100 (entre 0% e 100%).
+    #
+    # Critérios de Desempate para listar os 10 mais críticos:
+    # 1. Maior número absoluto de disciplinas abaixo do limiar.
+    # 2. Maior número absoluto de faltas (se disponíveis).
+    # 3. Ordem alfabética do nome do aluno.
+    #
     # --- Glossário (termos usados no relatório) ---
     h1("Glossário")
     story.append(Paragraph(
@@ -623,6 +747,15 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
         ("Asterisco (*)", "Marca disciplinas cuja nota máxima observada é baixa "
                           "(≤ metade da pontuação do bimestre), sugerindo lançamento "
                           "possivelmente incompleto — convém confirmar com o professor."),
+        ("Estimativa de Risco de Repetência",
+         "Índice heurístico (0% a 100%) que indica o risco de repetência do aluno "
+         "com base no bimestre corrente. Calculado por: 0.7 * (disciplinas do aluno "
+         "abaixo do limiar / total de disciplinas com notas) + 0.3 * min(1.0, faltas "
+         "do aluno / P90 de faltas da turma). Se as faltas não estiverem disponíveis, "
+         "o peso das notas é 100% (1.0). Limitação: O cálculo é puramente indicativo, "
+         "restrito ao bimestre corrente e estatisticamente não calibrado, não correspondendo "
+         "a uma predição preditiva real e não substituindo as regras oficiais de "
+         "retenção do CEFET-MG (frequência global anual mínima de 75% e média anual)."),
     ]
     linhas_gloss = [[Paragraph(f"<b>{t}</b>", style_celula_b), Paragraph(d, style_celula)]
                     for t, d in termos]
@@ -681,6 +814,75 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
         ('FONTNAME', (0, 1), (-1, -1), 'Times-Roman'),
     ]))
     story.append(tabela_criticos)
+    story.append(Spacer(1, 1 * cm))
+
+    # --- Estimativa de Risco de Repetência (Passo 3) ---
+    h1("Estimativa de Risco de Repetência")
+    story.append(Spacer(1, 0.4 * cm))
+    
+    texto_aviso = (
+        "<b>Aviso importante:</b> Esta seção apresenta uma estimativa heurística de risco baseada "
+        "exclusivamente nos sinais de rendimento e/ou faltas do bimestre atual. "
+        "Não se trata de uma predição estatística validada e <b>não substitui</b> os critérios "
+        "oficiais de retenção da instituição, os quais consideram a média anual (nos quatro bimestres) "
+        "e a frequência mínima exigida por lei (75% da carga horária anual)."
+    )
+    tabela_aviso = Table([[Paragraph(texto_aviso, style_corpo)]], colWidths=[16 * cm])
+    tabela_aviso.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#fcf8e3')),
+        ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor('#faf2cc')),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+    ]))
+    story.append(tabela_aviso)
+    story.append(Spacer(1, 0.5 * cm))
+
+    top10_risco = estatisticas.get('top_10_risco_repeticao', pd.DataFrame())
+    if not top10_risco.empty:
+        style_risco_header = ParagraphStyle(
+            name='RiscoHeader',
+            parent=style_celula_b,
+            textColor=colors.whitesmoke,
+            alignment=TA_CENTER
+        )
+        style_risco_nome = ParagraphStyle(
+            name='RiscoNome',
+            parent=style_celula,
+            alignment=TA_LEFT
+        )
+        style_risco_centro = ParagraphStyle(
+            name='RiscoCentro',
+            parent=style_celula,
+            alignment=TA_CENTER
+        )
+        dados_risco = [
+            [
+                Paragraph("<b>Aluno</b>", style_risco_header),
+                Paragraph("<b>Risco Estimado</b>", style_risco_header),
+                Paragraph("<b>Principal Fator</b>", style_risco_header)
+            ]
+        ]
+        for _, row in top10_risco.iterrows():
+            dados_risco.append([
+                Paragraph(str(row['nome']), style_risco_nome),
+                Paragraph(f"{row['risco_percent']:.1f}%", style_risco_centro),
+                Paragraph(str(row['principal_motivo']), style_risco_nome)
+            ])
+        tabela_risco = Table(dados_risco, colWidths=[7 * cm, 3.5 * cm, 5.5 * cm])
+        tabela_risco.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#002060')),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        story.append(tabela_risco)
+    else:
+        story.append(Paragraph("Nenhum registro de risco de repetência identificado para exibição.", style_corpo))
+    
     story.append(Spacer(1, 1 * cm))
 
     # --- Gráficos gerais ---

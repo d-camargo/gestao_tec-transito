@@ -47,6 +47,12 @@ bimestre e gráficos de distribuição. Esse sinal **não substitui** o limite l
 de 25% da carga horária — ele apenas aponta, sem depender do calendário, quem
 merece atenção.
 
+### Estimativa de risco de repetência
+
+O relatório apresenta um índice heurístico (0% a 100%) com o risco estimado de repetência dos 10 alunos mais críticos. Ele é calculado por meio de uma média ponderada entre a proporção de disciplinas abaixo do limiar de aprovação (peso de 70%) e a frequência de faltas em relação ao P90 da turma (peso de 30%). Caso os dados de faltas não estejam disponíveis, o cálculo é baseado unicamente no componente de disciplinas com notas (peso de 100%).
+
+> **Limitação importante**: Este índice é uma estimativa de sinalização baseada apenas nas notas e faltas do bimestre atual. Como a aplicação é *stateless* e processa cada bimestre de forma isolada, ela não realiza um consolidado anual nem possui histórico de retenções anteriores. Portanto, o indicador é puramente informativo e não substitui ou prediz os critérios oficiais de retenção do CEFET-MG (frequência global anual mínima de 75% e média anual).
+
 ### Caso especial: Trânsito + Estradas (1ª série)
 
 Há um **checkbox na barra lateral**, "Curso integrado Trânsito + Estradas
