@@ -1,12 +1,13 @@
 """Gestão Acadêmica EPTNM — CEFET-MG.
 
 App web (Streamlit) para coordenadores dos cursos técnicos de nível médio (EPTNM).
-O coordenador informa seu e-mail institucional, faz o upload do Mapa de Turma
-(.xls) e recebe o relatório de acompanhamento acadêmico (PDF) por e-mail.
+O coordenador informa seu e-mail institucional, faz o upload do(s) Mapa(s) de
+Turma (.xls) — um arquivo por bimestre, de 1 a 4 no total — e recebe o
+relatório de acompanhamento acadêmico (PDF) por e-mail.
 
-Caso especial: o Curso integrado **Trânsito + Estradas (1ª série)** exige 2
-arquivos (mapa de Trânsito + mapa de Estradas) e produz **2 PDFs**, um para
-cada curso.
+Caso especial: o Curso integrado **Trânsito + Estradas (1ª série)** exige os
+mapas de Trânsito e de Estradas (também de 1 a 4 arquivos por lado, pareados
+por bimestre) e produz **2 PDFs**, um para cada curso.
 """
 import os
 import re
@@ -16,7 +17,7 @@ import streamlit as st
 
 # Versão "humana" do app. Incremente ao publicar mudanças relevantes; o commit
 # do Git (mostrado ao lado) é o identificador exato do que está no ar.
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 from core import relatorios
 from core.email_sender import DOMINIO_INSTITUCIONAL, email_valido, enviar_relatorio
@@ -92,7 +93,7 @@ st.caption("Educação Profissional Técnica de Nível Médio · Centro Federal 
            "Educação Tecnológica de Minas Gerais")
 st.caption(f"🏷️ {_versao_label()}")
 st.markdown(
-    "Informe seu e-mail institucional e envie o **Mapa de Turma** (`.xls`). "
+    "Informe seu e-mail institucional e envie o(s) **Mapa(s) de Turma** (`.xls`). "
     "O relatório de acompanhamento acadêmico será gerado e **enviado para o seu "
     f"e-mail `@{DOMINIO_INSTITUCIONAL}`**."
 )
@@ -120,12 +121,14 @@ with st.sidebar:
                    "enviados à IA** — apenas estatísticas agregadas por disciplina.")
     st.divider()
     if eh_transito_estradas:
-        st.info("Modo **Trânsito + Estradas**: envie o mapa de Trânsito **e** o "
-                "mapa de Estradas (o de Estradas traz as notas do ensino médio). "
+        st.info("Modo **Trânsito + Estradas**: envie de 1 a 4 arquivos do mapa de "
+                "Trânsito **e** de 1 a 4 arquivos do mapa de Estradas (um por "
+                "bimestre, pareados; o de Estradas traz as notas do ensino médio). "
                 "Você receberá dois relatórios.")
     else:
-        st.info("Envie **1 arquivo**: o mapa de turma completo do seu curso. "
-                "Funciona para qualquer curso técnico do EPTNM.")
+        st.info("Envie de **1 a 4 arquivos**: o mapa de turma completo do seu "
+                "curso, um arquivo por bimestre. Funciona para qualquer curso "
+                "técnico do EPTNM.")
 
     st.divider()
     st.subheader("🔒 Privacidade e LGPD")
@@ -164,18 +167,22 @@ if eh_transito_estradas:
     c1, c2 = st.columns(2)
     with c1:
         arquivo_transito = st.file_uploader(
-            "📄 Mapa — Trânsito (.xls)", type=["xls"], key="up_transito", accept_multiple_files=True)
+            "📄 Mapa(s) — Trânsito (.xls) — 1 a 4 arquivos, um por bimestre",
+            type=["xls"], key="up_transito", accept_multiple_files=True)
     with c2:
         arquivo_estradas = st.file_uploader(
-            "📄 Mapa — Estradas (.xls)", type=["xls"], key="up_estradas", accept_multiple_files=True)
+            "📄 Mapa(s) — Estradas (.xls) — 1 a 4 arquivos, um por bimestre",
+            type=["xls"], key="up_estradas", accept_multiple_files=True)
     arquivos_ok = bool(arquivo_transito and arquivo_estradas)
 else:
     arquivo_unico = st.file_uploader(
-        "📄 Mapa de Turma (.xls)", type=["xls"], key="up_unico", accept_multiple_files=True)
+        "📄 Mapa(s) de Turma (.xls) — 1 a 4 arquivos, um por bimestre",
+        type=["xls"], key="up_unico", accept_multiple_files=True)
     arquivos_ok = bool(arquivo_unico)
 
 st.caption("ℹ️ O nome do curso e o bimestre são lidos automaticamente do cabeçalho "
-           "do arquivo. **Envie o mapa de um único bimestre por vez.**")
+           "de cada arquivo. **Você pode enviar de 1 a 4 arquivos (um por bimestre); "
+           "enviando 2 ou mais, o relatório inclui a Análise Multibimestral.**")
 
 enviar = st.button("📨 Gerar e enviar relatório por e-mail", type="primary")
 
