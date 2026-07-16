@@ -309,6 +309,136 @@ def processar_curso_generico(arquivo_xls):
     return df_notas, df_faltas, disciplinas_dict, metadados
 
 
+def _validar_conjunto_bimestres(conjuntos):
+    """Valida se todos os conjuntos processados pertencem à mesma turma
+    e possuem bimestres distintos. Levanta ArquivoInvalidoError se inválido.
+    """
+    if not conjuntos:
+        return
+
+    # Usamos o primeiro conjunto como referência para a turma
+    turma_referencia = (conjuntos[0][3].get('turma') or '').strip()
+    bimestres_vistos = set()
+
+    for _, _, _, metadados in conjuntos:
+        turma_atual = (metadados.get('turma') or '').strip()
+        if turma_atual != turma_referencia:
+            raise ArquivoInvalidoError(
+                f"Os arquivos enviados pertencem a turmas diferentes: "
+                f"\"{turma_referencia}\" e \"{turma_atual}\". "
+                "Envie apenas arquivos da mesma turma."
+            )
+
+        bimestre = metadados.get('bimestre_num')
+        if bimestre in bimestres_vistos:
+            raise ArquivoInvalidoError(
+                f"Há arquivos duplicados para o mesmo bimestre ({bimestre}º Bimestre). "
+                "Envie apenas um arquivo por bimestre."
+            )
+        bimestres_vistos.add(bimestre)
+
+
+def processar_multiplos_bimestres(lista_arquivos_xls):
+    """Processa múltiplos arquivos XLS correspondentes a bimestres diferentes
+    da mesma turma.
+
+    Retorna uma lista de conjuntos (df_notas, df_faltas, disciplinas_dict, metadados)
+    ordenada crescentemente pelo número do bimestre.
+    """
+    if not lista_arquivos_xls:
+        return []
+
+    conjuntos = []
+    for arq in lista_arquivos_xls:
+        conjunto = processar_curso_generico(arq)
+        conjuntos.append(conjunto)
+
+    _validar_conjunto_bimestres(conjuntos)
+
+    # Ordena a lista de conjuntos pelo 'bimestre_num' (metadados está no índice 3)
+    conjuntos.sort(key=lambda c: c[3].get('bimestre_num', 0))
+    return conjuntos
+
+
+def processar_multiplos_bimestres_transito_estradas(lista_arquivos_transito, lista_arquivos_estradas):
+    """Processa múltiplos arquivos XLS correspondentes a bimestres diferentes
+    do curso integrado Trânsito + Estradas (1ª série).
+
+    Pareia os arquivos de Trânsito e Estradas pelo número do bimestre.
+
+    Retorna duas listas (conjuntos de Trânsito, conjuntos de Estradas)
+    ordenadas pelo número do bimestre.
+    """
+    if not lista_arquivos_transito or not lista_arquivos_estradas:
+        return [], []
+
+    dict_transito = {}
+    for arq in lista_arquivos_transito:
+        if hasattr(arq, 'seek'):
+            arq.seek(0)
+        df_bruto = _ler_xls_bruto(arq)
+        meta = extrair_metadados(df_bruto)
+        bim = meta.get('bimestre_num')
+        if bim in dict_transito:
+            raise ArquivoInvalidoError(
+                f"Há arquivos duplicados para o mesmo bimestre ({bim}º Bimestre) em Trânsito. "
+                "Envie apenas um arquivo por bimestre."
+            )
+        dict_transito[bim] = arq
+
+    dict_estradas = {}
+    for arq in lista_arquivos_estradas:
+        if hasattr(arq, 'seek'):
+            arq.seek(0)
+        df_bruto = _ler_xls_bruto(arq)
+        meta = extrair_metadados(df_bruto)
+        bim = meta.get('bimestre_num')
+        if bim in dict_estradas:
+            raise ArquivoInvalidoError(
+                f"Há arquivos duplicados para o mesmo bimestre ({bim}º Bimestre) em Estradas. "
+                "Envie apenas um arquivo por bimestre."
+            )
+        dict_estradas[bim] = arq
+
+    bimestres_tt = set(dict_transito.keys())
+    bimestres_est = set(dict_estradas.keys())
+
+    if bimestres_tt != bimestres_est:
+        sem_par_tt = bimestres_tt - bimestres_est
+        sem_par_est = bimestres_est - bimestres_tt
+        if sem_par_tt:
+            bim_invalido = sorted(list(sem_par_tt))[0]
+            raise ArquivoInvalidoError(
+                f"O arquivo do {bim_invalido}º Bimestre de Trânsito não possui o par correspondente em Estradas. "
+                "Selecione o mesmo bimestre em ambos os mapas."
+            )
+        if sem_par_est:
+            bim_invalido = sorted(list(sem_par_est))[0]
+            raise ArquivoInvalidoError(
+                f"O arquivo do {bim_invalido}º Bimestre de Estradas não possui o par correspondente em Trânsito. "
+                "Selecione o mesmo bimestre em ambos os mapas."
+            )
+
+    conjuntos_tt = []
+    conjuntos_est = []
+
+    for bim in sorted(list(bimestres_tt)):
+        arq_tt = dict_transito[bim]
+        arq_est = dict_estradas[bim]
+        if hasattr(arq_tt, 'seek'):
+            arq_tt.seek(0)
+        if hasattr(arq_est, 'seek'):
+            arq_est.seek(0)
+        res = processar_transito_estradas(arq_tt, arq_est)
+        conjuntos_tt.append(res[0])
+        conjuntos_est.append(res[1])
+
+    _validar_conjunto_bimestres(conjuntos_tt)
+    _validar_conjunto_bimestres(conjuntos_est)
+
+    return conjuntos_tt, conjuntos_est
+
+
 def processar_transito_estradas(arquivo_transito_xls, arquivo_estradas_xls):
     """Fluxo especial 1ª série: processa **Trânsito + Estradas** juntos e
     devolve dois conjuntos independentes (TT e EST), prontos para virarem

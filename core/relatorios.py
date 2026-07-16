@@ -230,17 +230,13 @@ def _calcular_risco_repeticao(df_notas, df_faltas, estatisticas, limiar, discipl
     """Calcula por aluno o índice de risco de repetência (0-100%) e retorna os 10 mais críticos."""
     # 1. Componente Notas (C_notas):
     disciplinas_com_notas = estatisticas.get('disciplinas_com_notas', [])
+    abaixo_limiar = df_notas['disciplinas_abaixo_limiar']
     if disciplinas_com_notas:
-        df_apenas_notas = df_notas[disciplinas_com_notas]
-        total_validas = df_apenas_notas.notna().sum(axis=1)
-        abaixo_limiar = (df_apenas_notas < limiar).sum(axis=1)
-        
+        total_validas = df_notas[disciplinas_com_notas].notna().sum(axis=1)
         # Evita divisão por zero
         c_notas = abaixo_limiar.div(total_validas).fillna(0.0)
     else:
         c_notas = pd.Series(0.0, index=df_notas.index)
-        total_validas = pd.Series(0, index=df_notas.index)
-        abaixo_limiar = pd.Series(0, index=df_notas.index)
 
     # 2. Componente Faltas (C_faltas):
     has_faltas = (
@@ -316,6 +312,206 @@ def _calcular_risco_repeticao(df_notas, df_faltas, estatisticas, limiar, discipl
 
     # Retorna DataFrame com as colunas especificadas no plano
     return top_10[['nome', 'risco_percent', 'principal_motivo']]
+
+
+def calcular_estatisticas_multibimestre(lista_conjuntos):
+    """Calcula estatísticas agregadas a partir de múltiplos bimestres.
+
+    Retorna um dicionário com os DataFrames prontos para exibição ou None se
+    tivermos menos de 2 conjuntos de bimestres.
+    """
+    if not lista_conjuntos or len(lista_conjuntos) < 2:
+        return None
+
+    # Ordena para garantir ordem crescente de bimestre
+    lista_conjuntos = sorted(lista_conjuntos, key=lambda c: c[3].get('bimestre_num', 0))
+    sorted_bimestres = [c[3].get('bimestre_num') for c in lista_conjuntos]
+
+    # Estruturas para acumular dados por aluno (chave = matricula)
+    student_data = {}
+    all_estatisticas = []
+
+    for df_notas, df_faltas, disciplinas_dict, metadados in lista_conjuntos:
+        estatisticas = calcular_estatisticas(df_notas, disciplinas_dict, df_faltas, metadados)
+        all_estatisticas.append(estatisticas)
+
+        bim_num = estatisticas.get('bimestre_num')
+        if bim_num not in MAX_PONTOS_BIMESTRE:
+            continue
+
+        disc_com_notas = estatisticas.get('disciplinas_com_notas', [])
+        if disc_com_notas:
+            df_notas_num = df_notas[disc_com_notas].apply(pd.to_numeric, errors='coerce')
+            medias_serie = df_notas_num.mean(axis=1)
+        else:
+            medias_serie = pd.Series(pd.NA, index=df_notas.index)
+
+        media_map = pd.Series(medias_serie.values, index=df_notas['matricula'])
+        nome_map = pd.Series(df_notas['nome'].values, index=df_notas['matricula'])
+
+        has_faltas = (
+            df_faltas is not None
+            and not df_faltas.empty
+            and estatisticas.get('faltas_disponiveis', False)
+        )
+        if has_faltas:
+            cols_faltas = estatisticas.get('_faltas_cols', [])
+            df_f = df_faltas[cols_faltas].apply(pd.to_numeric, errors='coerce')
+            total_faltas_serie = df_f.sum(axis=1)
+            faltas_map = pd.Series(total_faltas_serie.values, index=df_faltas['matricula'])
+        else:
+            faltas_map = pd.Series(dtype='float64')
+
+        all_mats = set(df_notas['matricula'].dropna())
+        if df_faltas is not None and 'matricula' in df_faltas.columns:
+            all_mats = all_mats.union(set(df_faltas['matricula'].dropna()))
+
+        for mat in all_mats:
+            if pd.isna(mat):
+                continue
+
+            nome = None
+            if mat in nome_map.index:
+                nome = nome_map.loc[mat]
+                if isinstance(nome, pd.Series):
+                    nome = nome.iloc[0]
+            if (nome is None or pd.isna(nome)) and df_faltas is not None and 'nome' in df_faltas.columns:
+                nome_faltas_map = pd.Series(df_faltas['nome'].values, index=df_faltas['matricula'])
+                if mat in nome_faltas_map.index:
+                    nome = nome_faltas_map.loc[mat]
+                    if isinstance(nome, pd.Series):
+                        nome = nome.iloc[0]
+            if nome is None or pd.isna(nome):
+                nome = "Desconhecido"
+
+            if mat not in student_data:
+                student_data[mat] = {
+                    'nome': nome,
+                    'medias': {},
+                    'faltas': {}
+                }
+            else:
+                student_data[mat]['nome'] = nome
+
+            if mat in media_map.index:
+                val_media = media_map.loc[mat]
+                if isinstance(val_media, pd.Series):
+                    val_media = val_media.iloc[0]
+                if pd.notna(val_media):
+                    student_data[mat]['medias'][bim_num] = float(val_media)
+
+            if has_faltas and mat in faltas_map.index:
+                val_faltas = faltas_map.loc[mat]
+                if isinstance(val_faltas, pd.Series):
+                    val_faltas = val_faltas.iloc[0]
+                if pd.notna(val_faltas):
+                    student_data[mat]['faltas'][bim_num] = int(val_faltas)
+
+    # Agora que temos os dados consolidados, vamos construir as tabelas
+    linhas_evolucao = []
+    linhas_anual = []
+    lista_queda = []
+
+    # 2 últimos bimestres enviados
+    bim_penultimo = sorted_bimestres[-2]
+    bim_ultimo = sorted_bimestres[-1]
+
+    max_prev = MAX_PONTOS_BIMESTRE[bim_penultimo]
+    max_last = MAX_PONTOS_BIMESTRE[bim_ultimo]
+
+    # Verifica se há qualquer dado de faltas disponível nos bimestres
+    qualquer_falta_disponivel = any(est.get('faltas_disponiveis', False) for est in all_estatisticas)
+
+    for mat, data in student_data.items():
+        nome = data['nome']
+        medias = data['medias']
+        faltas = data['faltas']
+
+        # 1. Evolução
+        linha_ev = {'Aluno': nome}
+        for b in sorted_bimestres:
+            val_med = medias.get(b)
+            if val_med is not None:
+                linha_ev[f"{b}º Bimestre"] = f"{val_med:.1f}/{MAX_PONTOS_BIMESTRE[b]}"
+            else:
+                linha_ev[f"{b}º Bimestre"] = "N/A"
+        linhas_evolucao.append(linha_ev)
+
+        # 2. Média Anual
+        obtained_sum = 0.0
+        weight_sum = 0.0
+        for b, val_med in medias.items():
+            obtained_sum += val_med
+            weight_sum += MAX_PONTOS_BIMESTRE[b]
+
+        if weight_sum > 0:
+            media_anual = (obtained_sum / weight_sum) * 100
+            n_bimestres = len(medias)
+            status = "Completa" if n_bimestres == 4 else f"Parcial (baseada em {n_bimestres} de 4 bimestres)"
+            media_anual_str = f"{media_anual:.1f}%"
+        else:
+            media_anual_str = "N/A"
+            status = "N/A"
+
+        # Faltas acumuladas
+        if qualquer_falta_disponivel:
+            if faltas:
+                faltas_acumuladas = sum(faltas.values())
+                faltas_str = str(faltas_acumuladas)
+            else:
+                faltas_str = "0"
+        else:
+            faltas_str = "N/A"
+
+        linha_anual = {
+            'Aluno': nome,
+            'Média Anual': media_anual_str,
+            'Faltas Acumuladas': faltas_str,
+            'Status': status
+        }
+        linhas_anual.append(linha_anual)
+
+        # 3. Tendência
+        val_prev = medias.get(bim_penultimo)
+        val_last = medias.get(bim_ultimo)
+
+        if val_prev is not None and val_last is not None:
+            pct_prev = (val_prev / max_prev) * 100
+            pct_last = (val_last / max_last) * 100
+            diff = pct_last - pct_prev
+
+            if diff < -0.001:
+                lista_queda.append({
+                    'Aluno': nome,
+                    'Bimestre Anterior': f"{val_prev:.1f}/{max_prev} ({pct_prev:.1f}%)",
+                    'Bimestre Atual': f"{val_last:.1f}/{max_last} ({pct_last:.1f}%)",
+                    'Diferença (p.p.)': f"{diff:+.1f} p.p.",
+                    '_diff_raw': diff
+                })
+
+    df_evolucao = pd.DataFrame(linhas_evolucao)
+    if not df_evolucao.empty:
+        df_evolucao = df_evolucao.sort_values(by='Aluno').reset_index(drop=True)
+
+    df_media_anual = pd.DataFrame(linhas_anual)
+    if not df_media_anual.empty:
+        df_media_anual = df_media_anual.sort_values(by='Aluno').reset_index(drop=True)
+
+    if lista_queda:
+        df_queda = pd.DataFrame(lista_queda)
+        df_queda = df_queda.sort_values(by='_diff_raw').head(10).drop(columns=['_diff_raw']).reset_index(drop=True)
+    else:
+        df_queda = pd.DataFrame(columns=['Aluno', 'Bimestre Anterior', 'Bimestre Atual', 'Diferença (p.p.)'])
+
+    return {
+        'df_evolucao': df_evolucao,
+        'df_media_anual': df_media_anual,
+        'df_queda': df_queda,
+        'bimestres_estatisticas': all_estatisticas,
+        'sorted_bimestres': sorted_bimestres,
+        'bim_penultimo': bim_penultimo,
+        'bim_ultimo': bim_ultimo
+    }
 
 
 # --------------------------------
@@ -584,7 +780,7 @@ class _DocComSumario(BaseDocTemplate):
             self.notify('TOCEntry', (1, text, self.page))
 
 
-def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
+def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estatisticas_multibimestre=None):
     """Cria o relatório em PDF e devolve um BytesIO pronto para download."""
     buffer = io.BytesIO()
     doc = _DocComSumario(buffer, pagesize=A4)
@@ -692,33 +888,6 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
     story.append(toc)
     quebra_pagina()
 
-    # Decisão de Design - Passo 1 do PLAN.md:
-    # Fórmula Exata do Índice de Risco de Repetência (%):
-    #
-    # Componentes:
-    # 1. Componente Notas (C_notas):
-    #    Proporção de disciplinas abaixo do limiar (60% da nota do bimestre).
-    #    C_notas = (disciplinas_abaixo_limiar) / (total_de_disciplinas_com_notas_validas)
-    #
-    # 2. Componente Faltas (C_faltas):
-    #    Faltas do aluno normalizadas pelo P90 (Percentil 90) de faltas da turma.
-    #    C_faltas = min(1.0, faltas_do_aluno / P90_faltas_da_turma)
-    #    Se P90_faltas_da_turma for 0 ou indisponível, C_faltas = 0.
-    #
-    # Pesos e Integração:
-    # - Se dados de faltas estiverem disponíveis (estatisticas['faltas_disponiveis'] é True) e P90_faltas_da_turma > 0:
-    #   Índice_Risco = 0.7 * C_notas + 0.3 * C_faltas
-    # - Se os dados de faltas não estiverem disponíveis ou P90_faltas_da_turma for 0:
-    #   Índice_Risco = 1.0 * C_notas
-    #
-    # Escala:
-    # - Índice final = Índice_Risco * 100 (entre 0% e 100%).
-    #
-    # Critérios de Desempate para listar os 10 mais críticos:
-    # 1. Maior número absoluto de disciplinas abaixo do limiar.
-    # 2. Maior número absoluto de faltas (se disponíveis).
-    # 3. Ordem alfabética do nome do aluno.
-    #
     # --- Glossário (termos usados no relatório) ---
     h1("Glossário")
     story.append(Paragraph(
@@ -756,6 +925,17 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
          "restrito ao bimestre corrente e estatisticamente não calibrado, não correspondendo "
          "a uma predição preditiva real e não substituindo as regras oficiais de "
          "retenção do CEFET-MG (frequência global anual mínima de 75% e média anual)."),
+        ("Média Anual Parcial/Completa",
+         "Estimativa da média anual ponderada obtida pelos pesos oficiais do CEFET-MG (20/30/20/30 "
+         "pontos para os 1º, 2º, 3º e 4º bimestres, respectivamente). É rotulada como Completa "
+         "se os dados de todos os 4 bimestres forem fornecidos, ou Parcial se baseada em "
+         "apenas 1, 2 ou 3 bimestres."),
+        ("Tendência",
+         "Direção do desempenho do aluno (melhora, estável ou queda) comparando o percentual de "
+         "nota obtida em relação à nota máxima no bimestre atual versus o bimestre anterior."),
+        ("Faltas Acumuladas",
+         "Soma simples da quantidade de faltas do aluno ao longo de todos os bimestres "
+         "enviados. É rotulada como parcial se não incluir dados dos 4 bimestres."),
     ]
     linhas_gloss = [[Paragraph(f"<b>{t}</b>", style_celula_b), Paragraph(d, style_celula)]
                     for t, d in termos]
@@ -1036,6 +1216,145 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None):
             if fig is not None:
                 story.append(Image(_fig_para_imagem(fig), width=16 * cm, height=11 * cm, kind='proportional'))
                 story.append(Spacer(1, 0.8 * cm))
+
+    # --- Análise Multibimestral ---
+    if estatisticas_multibimestre is not None:
+        quebra_pagina()
+        h1("Análise Multibimestral")
+        
+        # Aviso de limitação
+        style_aviso = ParagraphStyle(
+            name='AvisoMultibimestre',
+            parent=style_celula,
+            fontSize=9,
+            leading=12,
+            textColor=colors.HexColor('#8a6d00')
+        )
+        tabela_aviso = Table([[Paragraph(
+            "<b>Aviso sobre limitações:</b> Esta análise consolida informações de múltiplos bimestres "
+            "com finalidade de acompanhamento pedagógico. A estimativa de Média Anual baseia-se nos "
+            "pesos oficiais do CEFET-MG (20/30/20/30). Contudo, a aprovação final depende também da "
+            "frequência global anual mínima de 75% da carga horária, dado que não está disponível nesta "
+            "análise. As informações apresentadas são indicativas de acompanhamento e não constituem "
+            "uma garantia ou decisão oficial de retenção ou aprovação.",
+            style_aviso
+        )]], colWidths=[16 * cm])
+        tabela_aviso.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#fcf8e3')),
+            ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor('#faf2cc')),
+            ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            ('LEFTPADDING', (0, 0), (-1, -1), 10),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+        ]))
+        story.append(tabela_aviso)
+        story.append(Spacer(1, 0.5 * cm))
+
+        h2("Evolução das Médias dos Alunos")
+        story.append(Spacer(1, 0.3 * cm))
+        df_ev = estatisticas_multibimestre['df_evolucao']
+        if not df_ev.empty:
+            style_celula_centro = ParagraphStyle(
+                name='CelulaCentroMultibimestre', parent=style_celula, alignment=TA_CENTER)
+            
+            headers = [Paragraph(f"<b>{col}</b>", style_celula_b) for col in df_ev.columns]
+            dados_ev = [headers]
+            for _, row in df_ev.iterrows():
+                linha = []
+                for col in df_ev.columns:
+                    if col == 'Aluno':
+                        linha.append(Paragraph(str(row[col]), style_celula))
+                    else:
+                        linha.append(Paragraph(str(row[col]), style_celula_centro))
+                dados_ev.append(linha)
+            
+            num_cols = len(df_ev.columns)
+            if num_cols > 1:
+                largura_aluno = 7 * cm
+                largura_restante = (16 * cm - largura_aluno) / (num_cols - 1)
+                col_widths = [largura_aluno] + [largura_restante] * (num_cols - 1)
+            else:
+                col_widths = [16 * cm]
+                
+            tabela_ev = Table(dados_ev, colWidths=col_widths, repeatRows=1)
+            tabela_ev.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#002060')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ]))
+            story.append(tabela_ev)
+            story.append(Spacer(1, 0.8 * cm))
+
+        is_completa = len(estatisticas_multibimestre.get('sorted_bimestres', [])) == 4
+        label_status = "COMPLETA" if is_completa else "PARCIAL"
+        h2(f"Estimativa de Média Anual ({label_status})")
+        story.append(Spacer(1, 0.3 * cm))
+        df_anual = estatisticas_multibimestre['df_media_anual']
+        if not df_anual.empty:
+            style_celula_centro = ParagraphStyle(
+                name='CelulaCentroMultibimestreAnual', parent=style_celula, alignment=TA_CENTER)
+            
+            headers_anual = [Paragraph(f"<b>{col}</b>", style_celula_b) for col in df_anual.columns]
+            dados_anual = [headers_anual]
+            for _, row in df_anual.iterrows():
+                linha = [
+                    Paragraph(str(row['Aluno']), style_celula),
+                    Paragraph(str(row['Média Anual']), style_celula_centro),
+                    Paragraph(str(row['Faltas Acumuladas']), style_celula_centro),
+                    Paragraph(str(row['Status']), style_celula),
+                ]
+                dados_anual.append(linha)
+            
+            tabela_anual = Table(dados_anual, colWidths=[6 * cm, 2.5 * cm, 3 * cm, 4.5 * cm], repeatRows=1)
+            tabela_anual.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#002060')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ]))
+            story.append(tabela_anual)
+            story.append(Spacer(1, 0.8 * cm))
+
+        h2("Alunos com Maior Queda de Desempenho (Top 10)")
+        story.append(Spacer(1, 0.3 * cm))
+        df_q = estatisticas_multibimestre['df_queda']
+        if not df_q.empty:
+            style_celula_centro = ParagraphStyle(
+                name='CelulaCentroMultibimestreQueda', parent=style_celula, alignment=TA_CENTER)
+            
+            headers_q = [Paragraph(f"<b>{col}</b>", style_celula_b) for col in df_q.columns]
+            dados_q = [headers_q]
+            for _, row in df_q.iterrows():
+                linha = [
+                    Paragraph(str(row['Aluno']), style_celula),
+                    Paragraph(str(row['Bimestre Anterior']), style_celula_centro),
+                    Paragraph(str(row['Bimestre Atual']), style_celula_centro),
+                    Paragraph(str(row['Diferença (p.p.)']), style_celula_centro),
+                ]
+                dados_q.append(linha)
+            
+            tabela_q = Table(dados_q, colWidths=[6 * cm, 3.5 * cm, 3.5 * cm, 3 * cm], repeatRows=1)
+            tabela_q.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7a3030')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ]))
+            story.append(tabela_q)
+            story.append(Spacer(1, 0.8 * cm))
+        else:
+            story.append(Paragraph("Nenhum aluno apresentou queda de desempenho entre os dois últimos bimestres.", style_corpo))
+            story.append(Spacer(1, 0.8 * cm))
 
     # --- Comentário da IA ---
     if estatisticas.get('comentario_ia'):

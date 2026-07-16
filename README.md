@@ -13,8 +13,7 @@ coordenador do EPTNM — não só Trânsito/Estradas.
 
 1. O coordenador informa o **e-mail `@cefetmg.br`** (o serviço só envia para esse
    domínio — é assim que se garante o uso restrito a professores do CEFET).
-2. Envia o **Mapa de Turma** (`.xls`) de **um único bimestre**. O nome do curso,
-   a turma e o bimestre são lidos automaticamente do cabeçalho do arquivo.
+2. Envia os **Mapas de Turma** (`.xls`) de **um ou mais bimestres** (até 4 arquivos por curso, um para cada bimestre). O nome do curso, a turma e o bimestre de cada arquivo são lidos automaticamente de seus cabeçalhos.
 3. O app processa notas e faltas, calcula estatísticas (com o **limiar de
    aprovação ajustado ao bimestre** — 60% de 20 ou 30 pontos), gera gráficos,
    destaca os alunos com mais disciplinas críticas e os com mais faltas, e
@@ -22,9 +21,9 @@ coordenador do EPTNM — não só Trânsito/Estradas.
 4. O PDF é **enviado por e-mail** ao coordenador. A tela mostra apenas a
    confirmação — nada de download nem dados expostos na página.
 
-> **Bimestre único**: o app só processa arquivos cujo cabeçalho indica um
-> bimestre individual (1º, 2º, 3º ou 4º Bimestre). Mapas agregados são
-> rejeitados com mensagem clara.
+> **Arquivos individuais**: o app só processa arquivos cujos cabeçalhos indicam um
+> bimestre individual (1º, 2º, 3º ou 4º Bimestre). Mapas agregados (contendo múltiplos bimestres em um único arquivo) são
+> rejeitados, mas você pode enviar até 4 arquivos individuais simultaneamente.
 
 ### Pontuação por bimestre (CEFET-MG)
 
@@ -52,6 +51,17 @@ merece atenção.
 O relatório apresenta um índice heurístico (0% a 100%) com o risco estimado de repetência dos 10 alunos mais críticos. Ele é calculado por meio de uma média ponderada entre a proporção de disciplinas abaixo do limiar de aprovação (peso de 70%) e a frequência de faltas em relação ao P90 da turma (peso de 30%). Caso os dados de faltas não estejam disponíveis, o cálculo é baseado unicamente no componente de disciplinas com notas (peso de 100%).
 
 > **Limitação importante**: Este índice é uma estimativa de sinalização baseada apenas nas notas e faltas do bimestre atual. Como a aplicação é *stateless* e processa cada bimestre de forma isolada, ela não realiza um consolidado anual nem possui histórico de retenções anteriores. Portanto, o indicador é puramente informativo e não substitui ou prediz os critérios oficiais de retenção do CEFET-MG (frequência global anual mínima de 75% e média anual).
+
+### Análise multibimestral
+
+Ao enviar mais de um arquivo do mesmo curso/turma (até 4 arquivos no máximo, um para cada bimestre), o aplicativo ativa automaticamente a **Análise Multibimestral** no relatório. Esta análise consolida as informações dos bimestres fornecidos e traz novas métricas por aluno:
+
+- **Evolução das Médias**: histórico temporal da média geral do aluno ao longo dos bimestres enviados.
+- **Média Anual**: estimativa da média anual baseada nos pesos oficiais do CEFET-MG (20/30/20/30). É rotulada como **parcial** se faltarem bimestres no envio, ou **completa** quando os 4 bimestres são fornecidos.
+- **Faltas Acumuladas**: soma das faltas do aluno ao longo de todos os bimestres enviados (com aviso de "parcial" se menor que 4 bimestres).
+- **Tendência**: tendência de desempenho de notas comparando os dois últimos bimestres enviados, permitindo destacar os 10 alunos com maior queda.
+
+> **Comportamento com 1 arquivo**: caso seja enviado apenas 1 arquivo (ou 1 par, no caso de Trânsito + Estradas), o comportamento do aplicativo é **idêntico ao atual**, sem a inclusão de novas seções multibimestrais no relatório PDF.
 
 ### Caso especial: Trânsito + Estradas (1ª série)
 
