@@ -65,12 +65,14 @@ Ao enviar mais de um arquivo do mesmo curso/turma (até 4 arquivos no máximo, u
 
 ### Caso especial: Trânsito + Estradas (1ª série)
 
-Há um **checkbox na barra lateral**, "Curso integrado Trânsito + Estradas
-(1ª série)". Quando marcado, o app pede **2 arquivos** (mapa de Trânsito e mapa
-de Estradas, porque o de Estradas traz o ensino médio compartilhado) e produz
-**2 relatórios** — um para cada curso — anexados no mesmo e-mail. Para os
-demais cursos, basta **1 arquivo** e as disciplinas são extraídas dinamicamente
-do próprio mapa.
+Há um **seletor de modo no corpo da página**, logo acima dos campos de envio,
+com as opções "Curso único (qualquer curso do EPTNM)" e "Curso integrado
+Trânsito + Estradas (1ª série)". No modo integrado, o app pede **de 1 a 4
+arquivos de cada lado, pareados por bimestre** (mapas de Trânsito e mapas de
+Estradas, porque o de Estradas traz o ensino médio compartilhado) e produz
+**2 relatórios** — um para cada curso — anexados no mesmo e-mail. No modo
+"Curso único", basta enviar os arquivos no campo único e as disciplinas são
+extraídas dinamicamente do próprio mapa.
 
 ## 🗂️ Estrutura
 
@@ -83,6 +85,7 @@ do próprio mapa.
 │   ├── relatorios.py       # Estatísticas, gráficos, IA e geração do PDF
 │   └── email_sender.py     # Validação de e-mail e envio SMTP (Gmail)
 ├── assets/                 # Logo institucional opcional (logo_cefet.png)
+├── tests/                  # Testes unitários (conftest.py, test_transito_estradas.py)
 ├── .streamlit/
 │   ├── config.toml         # Tema
 │   └── secrets.toml.example

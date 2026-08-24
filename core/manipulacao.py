@@ -38,6 +38,13 @@ def remover_acentos(txt):
     )
 
 
+def _curso_normalizado(metadados):
+    """Nome do curso dos metadados do mapa, sem acentos e em minúsculas,
+    pronto para comparação (ex.: 'tecnico em transito - bh-1trans')."""
+    curso = metadados.get('curso') or metadados.get('curso_amigavel') or ''
+    return remover_acentos(str(curso)).casefold()
+
+
 def _ler_xls_bruto(arquivo_xls):
     """Lê o XLS inteiro como DataFrame de strings (sem cabeçalho).
 
@@ -318,11 +325,25 @@ def _validar_conjunto_bimestres(conjuntos):
 
     # Usamos o primeiro conjunto como referência para a turma
     turma_referencia = (conjuntos[0][3].get('turma') or '').strip()
+    meta_referencia = conjuntos[0][3]
     bimestres_vistos = set()
 
     for _, _, _, metadados in conjuntos:
         turma_atual = (metadados.get('turma') or '').strip()
         if turma_atual != turma_referencia:
+            curso_ref = _curso_normalizado(meta_referencia)
+            curso_atual = _curso_normalizado(metadados)
+            eh_tt_est = (
+                ("transito" in curso_ref and "estradas" in curso_atual) or
+                ("estradas" in curso_ref and "transito" in curso_atual)
+            )
+            if eh_tt_est:
+                raise ArquivoInvalidoError(
+                    f"Os arquivos enviados pertencem a turmas diferentes: "
+                    f"\"{turma_referencia}\" e \"{turma_atual}\". "
+                    "Marque a opção \"Curso integrado Trânsito + Estradas (1ª série)\" "
+                    "e envie cada mapa no seu próprio campo."
+                )
             raise ArquivoInvalidoError(
                 f"Os arquivos enviados pertencem a turmas diferentes: "
                 f"\"{turma_referencia}\" e \"{turma_atual}\". "
@@ -378,6 +399,13 @@ def processar_multiplos_bimestres_transito_estradas(lista_arquivos_transito, lis
             arq.seek(0)
         df_bruto = _ler_xls_bruto(arq)
         meta = extrair_metadados(df_bruto)
+        curso_raw = meta.get('curso') or meta.get('curso_amigavel') or ''
+        curso_norm = _curso_normalizado(meta)
+        if 'transito' not in curso_norm:
+            raise ArquivoInvalidoError(
+                f"O campo de Trânsito recebeu um arquivo do curso \"{curso_raw}\". "
+                "Verifique os arquivos e faça a troca dos campos."
+            )
         bim = meta.get('bimestre_num')
         if bim in dict_transito:
             raise ArquivoInvalidoError(
@@ -392,6 +420,13 @@ def processar_multiplos_bimestres_transito_estradas(lista_arquivos_transito, lis
             arq.seek(0)
         df_bruto = _ler_xls_bruto(arq)
         meta = extrair_metadados(df_bruto)
+        curso_raw = meta.get('curso') or meta.get('curso_amigavel') or ''
+        curso_norm = _curso_normalizado(meta)
+        if 'estradas' not in curso_norm:
+            raise ArquivoInvalidoError(
+                f"O campo de Estradas recebeu um arquivo do curso \"{curso_raw}\". "
+                "Verifique os arquivos e faça a troca dos campos."
+            )
         bim = meta.get('bimestre_num')
         if bim in dict_estradas:
             raise ArquivoInvalidoError(

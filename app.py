@@ -17,7 +17,7 @@ import streamlit as st
 
 # Versão "humana" do app. Incremente ao publicar mudanças relevantes; o commit
 # do Git (mostrado ao lado) é o identificador exato do que está no ar.
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 from core import relatorios
 from core.email_sender import DOMINIO_INSTITUCIONAL, email_valido, enviar_relatorio
@@ -103,13 +103,6 @@ st.markdown(
 # --------------------------------
 with st.sidebar:
     st.header("⚙️ Configurações")
-    eh_transito_estradas = st.checkbox(
-        "Curso integrado Trânsito + Estradas (1ª série)",
-        value=False,
-        help="Marque se você é coordenador(a) da 1ª série de Trânsito ou "
-             "Estradas. Esse modo requer os dois mapas e gera dois relatórios "
-             "(um para cada curso) no mesmo e-mail.",
-    )
     usar_ia = st.toggle(
         "Incluir análise por IA (OpenAI)",
         value=False,
@@ -119,16 +112,6 @@ with st.sidebar:
     if usar_ia:
         st.caption("🔒 Os **nomes e as notas individuais dos alunos não são "
                    "enviados à IA** — apenas estatísticas agregadas por disciplina.")
-    st.divider()
-    if eh_transito_estradas:
-        st.info("Modo **Trânsito + Estradas**: envie de 1 a 4 arquivos do mapa de "
-                "Trânsito **e** de 1 a 4 arquivos do mapa de Estradas (um por "
-                "bimestre, pareados; o de Estradas traz as notas do ensino médio). "
-                "Você receberá dois relatórios.")
-    else:
-        st.info("Envie de **1 a 4 arquivos**: o mapa de turma completo do seu "
-                "curso, um arquivo por bimestre. Funciona para qualquer curso "
-                "técnico do EPTNM.")
 
     st.divider()
     st.subheader("🔒 Privacidade e LGPD")
@@ -162,6 +145,29 @@ email = st.text_input(
     f"📧 Seu e-mail institucional (@{DOMINIO_INSTITUCIONAL})",
     placeholder=f"seu.nome@{DOMINIO_INSTITUCIONAL}",
 )
+
+_MODO_INTEGRADO = "Curso integrado Trânsito + Estradas (1ª série)"
+modo_curso = st.radio(
+    "Modo",
+    ["Curso único (qualquer curso do EPTNM)", _MODO_INTEGRADO],
+    index=0,
+    help="Escolha o integrado se você é coordenador(a) da 1ª série de "
+         "Trânsito ou Estradas. Esse modo requer os dois mapas e gera dois "
+         "relatórios (um para cada curso) no mesmo e-mail.",
+)
+eh_transito_estradas = modo_curso == _MODO_INTEGRADO
+
+with st.sidebar:
+    st.divider()
+    if eh_transito_estradas:
+        st.info("Modo **Trânsito + Estradas**: envie de 1 a 4 arquivos do mapa de "
+                "Trânsito **e** de 1 a 4 arquivos do mapa de Estradas (um por "
+                "bimestre, pareados; o de Estradas traz as notas do ensino médio). "
+                "Você receberá dois relatórios.")
+    else:
+        st.info("Envie de **1 a 4 arquivos**: o mapa de turma completo do seu "
+                "curso, um arquivo por bimestre. Funciona para qualquer curso "
+                "técnico do EPTNM.")
 
 if eh_transito_estradas:
     c1, c2 = st.columns(2)
