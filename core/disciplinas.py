@@ -67,6 +67,10 @@ _EM_KEYWORDS = (
     'filosofia', 'redacao', 'arte', 'ciencias', 'literatura',
 )
 
+_STEM_KEYWORDS = (
+    'matematica', 'fisica', 'quimica',
+)
+
 
 def _normalizar(txt) -> str:
     """Minúsculas e sem acentos, para comparação tolerante de nomes."""
@@ -99,3 +103,26 @@ def detectar_serie(disciplinas_dict):
         if m:
             contagem[int(m.group(1))] += 1
     return contagem.most_common(1)[0][0] if contagem else None
+
+
+def disciplinas_stem(disciplinas_dict) -> dict:
+    """Retorna ``{codigo: nome}`` apenas das disciplinas STEM do núcleo comum
+    do Ensino Médio: **Matemática, Física e Química**, classificadas pelo nome
+    da legenda (mesmo padrão de ``eh_disciplina_ensino_medio``) — os códigos
+    do SIGAA mudam a cada série, o nome não. A ordem do dicionário recebido é
+    preservada.
+
+    Armadilha conhecida: ``'EDUCAÇÃO FÍSICA'`` normaliza para
+    ``'educacao fisica'``, que contém a substring ``'fisica'`` — por isso a
+    exclusão explícita abaixo.
+    """
+    resultado = {}
+    for codigo, nome in (disciplinas_dict or {}).items():
+        n = _normalizar(nome)
+        if not n or 'educacao fisica' in n:
+            continue
+        if any(k in n for k in _STEM_KEYWORDS):
+            resultado[codigo] = nome
+    return resultado
+
+

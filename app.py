@@ -17,7 +17,7 @@ import streamlit as st
 
 # Versão "humana" do app. Incremente ao publicar mudanças relevantes; o commit
 # do Git (mostrado ao lado) é o identificador exato do que está no ar.
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 from core import relatorios
 from core.email_sender import DOMINIO_INSTITUCIONAL, email_valido, enviar_relatorio

@@ -71,7 +71,7 @@ def mapa_sintetico(curso="TÉCNICO EM TRÂNSITO", bimestre=1, turma="TRA.1A",
 
 
 @pytest.fixture(autouse=True)
-def xls_sintetico(monkeypatch):
+def _ler_xls_sintetico(monkeypatch):
     """Faz `_ler_xls_bruto` aceitar os DataFrames sintéticos como se fossem XLS.
 
     Com isso, os testes entregam o DataFrame do helper no lugar do arquivo,
@@ -85,3 +85,12 @@ def xls_sintetico(monkeypatch):
         return original(arquivo_xls)
 
     monkeypatch.setattr(manipulacao, "_ler_xls_bruto", _ler)
+
+
+@pytest.fixture(autouse=True)
+def _fechar_figuras_matplotlib():
+    """Fecha as figuras matplotlib após cada teste — os gráficos do relatório
+    são criados via pyplot e ficariam retidos em memória entre os testes."""
+    yield
+    import matplotlib.pyplot as plt
+    plt.close('all')
