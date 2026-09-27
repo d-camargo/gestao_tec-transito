@@ -49,6 +49,8 @@ from .disciplinas import disciplinas_stem
 # --------------------------------
 MAX_PONTOS_BIMESTRE = {1: 20, 2: 30, 3: 20, 4: 30}
 PERCENTUAL_APROVACAO = 0.60  # 60% dos pontos do bimestre
+COR_CABECALHO_TABELA = colors.HexColor('#002060')
+COR_TEXTO_CABECALHO_TABELA = colors.white
 
 
 def _limiar_aprovacao(metadados):
@@ -1661,10 +1663,9 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estat
                                    fontName='Times-Roman', fontSize=9, leading=11)
     style_celula_b = ParagraphStyle(name='CelulaB', parent=styles['BodyText'],
                                      fontName='Times-Bold', fontSize=9, leading=11)
-    # Cabeçalho de tabela com fundo escuro e célula centrada — usados pelas
-    # tabelas de alunos (média, IDA e faltas).
+    # Cabeçalho padrão de todas as tabelas (célula centrada).
     style_cab_branco = ParagraphStyle(name='CabBranco', parent=style_celula_b,
-                                       textColor=colors.whitesmoke, alignment=TA_CENTER)
+                                       textColor=COR_TEXTO_CABECALHO_TABELA, alignment=TA_CENTER)
     style_cel_centro = ParagraphStyle(name='CelCentro', parent=style_celula,
                                       alignment=TA_CENTER)
 
@@ -1933,7 +1934,8 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estat
 
         tabela_pais = Table(dados_pais, colWidths=col_widths_pais, repeatRows=1)
         tabela_pais.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#002060')),
+            ('BACKGROUND', (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+            ('TEXTCOLOR', (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
@@ -2004,7 +2006,8 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estat
         tabela_abaixo = Table(
             dados_abaixo, colWidths=[8.5 * cm, 3.5 * cm, 4 * cm], repeatRows=1)
         tabela_abaixo.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.darkred),
+            ('BACKGROUND', (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+            ('TEXTCOLOR', (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -2059,7 +2062,8 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estat
             tabela_falt = Table(
                 dados_falt, colWidths=[8 * cm, 4 * cm, 4 * cm], repeatRows=1)
             tabela_falt.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7a3030')),
+                ('BACKGROUND', (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                ('TEXTCOLOR', (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -2089,7 +2093,7 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estat
                 parent=style_celula_b,
                 fontSize=8,
                 leading=10,
-                textColor=colors.whitesmoke,
+                textColor=COR_TEXTO_CABECALHO_TABELA,
                 alignment=TA_CENTER
             )
             style_centro_faltas_disc = ParagraphStyle(
@@ -2121,7 +2125,8 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estat
             cols_widths = [4.5 * cm, 1.6 * cm, 1.6 * cm, 1.4 * cm, 2 * cm, 2 * cm, 2.4 * cm]
             tabela_falt_disc = Table(dados_falt_disc, colWidths=cols_widths)
             tabela_falt_disc.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7a3030')),
+                ('BACKGROUND', (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                ('TEXTCOLOR', (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -2158,7 +2163,8 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estat
         ])
     tabela_summary = Table(dados_summary, colWidths=[4.5 * cm, 2 * cm, 2 * cm, 2.5 * cm, 2 * cm, 2 * cm], repeatRows=1)
     tabela_summary.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.cadetblue),
+        ('BACKGROUND', (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+        ('TEXTCOLOR', (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('GRID', (0, 0), (-1, -1), 1, colors.black),
@@ -2232,8 +2238,8 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estat
             ])
         tabela_sem = Table(dados_sem, colWidths=[6 * cm, 10 * cm])
         tabela_sem.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#8a6d00')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('BACKGROUND', (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+            ('TEXTCOLOR', (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
             ('FONTNAME', (0, 0), (-1, 0), 'Times-Bold'),
             ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
             ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
@@ -2262,8 +2268,8 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estat
                 colWidths=[4.2 * cm, 1.8 * cm, 1.8 * cm, 2.0 * cm, 2.2 * cm, 1.8 * cm, 2.2 * cm],
                 repeatRows=1)
             tabela_stem.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.cadetblue),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('BACKGROUND', (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                ('TEXTCOLOR', (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
                 ('FONTNAME', (0, 0), (-1, 0), 'Times-Bold'),
@@ -2335,8 +2341,8 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estat
 
             tabela_anual = Table(dados_anual, colWidths=[6 * cm, 2.5 * cm, 3 * cm, 4.5 * cm], repeatRows=1)
             tabela_anual.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#002060')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('BACKGROUND', (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                ('TEXTCOLOR', (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
@@ -2380,7 +2386,8 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estat
                 ])
             tabela_ida_multi = Table(dados_ida_multi, colWidths=[8 * cm, 4 * cm, 4 * cm], repeatRows=1)
             tabela_ida_multi.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#002060')),
+                ('BACKGROUND', (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                ('TEXTCOLOR', (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
@@ -2422,8 +2429,8 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estat
 
             tabela_q = Table(dados_q, colWidths=[6 * cm, 3.5 * cm, 3.5 * cm, 3 * cm], repeatRows=1)
             tabela_q.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7a3030')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('BACKGROUND', (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                ('TEXTCOLOR', (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
@@ -2487,7 +2494,8 @@ def criar_relatorio_pdf(nome_curso, estatisticas, figuras, logo_path=None, estat
                 dados_prob, colWidths=[4.5 * cm, 2.6 * cm, 2 * cm, 1.6 * cm, 2.8 * cm, 2.5 * cm],
                 repeatRows=1)
             tabela_prob.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#002060')),
+                ('BACKGROUND', (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                ('TEXTCOLOR', (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
