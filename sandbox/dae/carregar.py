@@ -143,6 +143,29 @@ def _normalizar_nome_mes(txt: object) -> str:
     return s
 
 
+def _normalizar_acumulado_dae(serie: pd.Series) -> tuple[pd.Series, str]:
+    """Normaliza a coluna acumulado_dae para fração [0, 1] e detecta a escala (C12).
+
+    Garante que os valores estejam sempre na escala [0, 1]. Valores numéricos
+    superiores a 1.0 (ex.: 85 ou 95.5) são tratados como percentuais crus e
+    divididos por 100.0. Valores em percentual com sufixo '%' já são convertidos
+    para fração por `_converter_numerico`.
+
+    Retorna:
+        Tupla (serie_normalizada, escala), onde escala é 'fracao', 'percentual' ou 'vazio'.
+    """
+    s_num = serie.apply(_converter_numerico).astype("float64")
+    if s_num.isna().all():
+        return s_num, "vazio"
+
+    eh_percentual = s_num > 1.0
+    if eh_percentual.any():
+        s_norm = s_num.mask(eh_percentual, s_num / 100.0)
+        return s_norm, "percentual"
+
+    return s_num, "fracao"
+
+
 def carregar_dae(caminho: str | Path) -> pd.DataFrame:
     """Carrega e normaliza os dados da planilha de frequência da DAE.
 
@@ -157,6 +180,13 @@ def carregar_dae(caminho: str | Path) -> pd.DataFrame:
         e normalizado para 'nada_consta', mas não foi confirmado formalmente
         pela DAE. Alunos com 'nada_consta' não são marcados no programa Pé-de-Meia.
 
+    Guarda de escala do acumulado_dae (Decisão C12):
+        Garante que a coluna 'acumulado_dae' esteja sempre normalizada em fração [0, 1].
+        Se a coluna contiver valores percentuais crus (ex.: 85 ou 95,5 > 1.0), esses valores
+        são convertidos para fração (0.85, 0.955) e `df.attrs["escala_acumulado"]` é marcado
+        como 'percentual'. Se já estiver em fração ou formatado com '%' (ex.: 0.85 ou '85%'),
+        mantém a escala e registra 'fracao'. Se toda a coluna for vazia/NaN, registra 'vazio'.
+
     Colunas de saída:
         - matricula: somente dígitos (str)
         - nome: nome do estudante (str)
@@ -168,7 +198,7 @@ def carregar_dae(caminho: str | Path) -> pd.DataFrame:
         - programas: lista de siglas dos programas do aluno (['PdM', 'BA/BP', 'BCE'])
         - ha_ofertadas_<mes>: total de horas-aula ofertadas no mês (float ou NaN se vazio)
         - ha_presenciadas_<mes>: total de horas-aula presenciadas no mês (float ou NaN se vazio)
-        - acumulado_dae: percentual acumulado registrado pela DAE (float ou NaN se vazio)
+        - acumulado_dae: percentual acumulado registrado pela DAE sempre em fração [0, 1] (float ou NaN se vazio)
 
     Minimização de dados (Decisão D4):
         - A coluna CPF é descartada na entrada.
@@ -178,7 +208,8 @@ def carregar_dae(caminho: str | Path) -> pd.DataFrame:
         caminho: Caminho para o arquivo .xlsx ou .csv.
 
     Retorna:
-        pd.DataFrame com os dados normalizados.
+        pd.DataFrame com os dados normalizados. Contém no atributo
+        `attrs["escala_acumulado"]` a escala detectada ('fracao', 'percentual' ou 'vazio').
 
     Levanta:
         ValueError: Se a extensão não for .xlsx ou .csv, se a aba '2026 - geral'
@@ -313,7 +344,9 @@ def carregar_dae(caminho: str | Path) -> pd.DataFrame:
             "bolsa_bce",
             "programas",
         ] + [c_name for _, c_name in colunas_meses] + ["acumulado_dae"]
-        return pd.DataFrame(columns=cols_vazias)
+        df_vazio = pd.DataFrame(columns=cols_vazias)
+        df_vazio.attrs["escala_acumulado"] = "vazio"
+        return df_vazio
 
     matricula_s = matricula_limpa[mask_valido].reset_index(drop=True)
     nome_s = (
@@ -378,12 +411,12 @@ def carregar_dae(caminho: str | Path) -> pd.DataFrame:
             .reset_index(drop=True)
         )
 
-    # Adicionar acumulado_dae
-    resultado["acumulado_dae"] = (
-        df_data.loc[mask_valido, idx_map["acumulado_dae"]]
-        .apply(_converter_numerico)
-        .astype("float64")
-        .reset_index(drop=True)
+    # Adicionar acumulado_dae com guarda de escala (C12)
+    s_acum, escala_acum = _normalizar_acumulado_dae(
+        df_data.loc[mask_valido, idx_map["acumulado_dae"]].reset_index(drop=True)
     )
+    resultado["acumulado_dae"] = s_acum
 
-    return pd.DataFrame(resultado)
+    df_resultado = pd.DataFrame(resultado)
+    df_resultado.attrs["escala_acumulado"] = escala_acum
+    return df_resultado

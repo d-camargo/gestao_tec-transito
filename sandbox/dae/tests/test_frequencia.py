@@ -8,14 +8,21 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from calendario import carregar_calendario, ch_lecionada
 from carregar import carregar_dae
 from frequencia import (
     MESES_CALENDARIO,
     MESES_POR_BIMESTRE,
+    faixa_frequencia_por_faltas,
     frequencia_ponderada,
+    frequencia_por_disciplina,
+    frequencia_por_faltas,
+    limite_faltas,
     mes_referencia,
     meses_lancados,
+    meses_por_bimestre_do_calendario,
     periodo_apuracao,
+    resumo_frequencia_por_disciplina,
     tabela_frequencia,
 )
 
@@ -291,3 +298,215 @@ def test_nenhuma_coluna_de_saida_por_mes(caminho_xlsx: Path) -> None:
     ]
     for c in colunas_obrigatorias:
         assert c in tab.columns, f"Coluna esperada ausente: {c}"
+
+
+def test_limite_faltas() -> None:
+    """Verifica limite_faltas para diferentes cargas horárias (C6)."""
+    assert limite_faltas(70) == 17
+    assert limite_faltas(76) == 19
+    assert limite_faltas(78) == 19
+    assert limite_faltas(80) == 20
+    assert limite_faltas(18) == 4
+    assert limite_faltas(31) == 7
+
+
+def test_frequencia_por_faltas_e_calendario() -> None:
+    """Verifica frequencia_por_faltas com cargas horárias do calendário nos cenários A e REAL."""
+    cal = carregar_calendario()
+
+    # 2 aulas na TER, anual, A (CH 76): 19 faltas → exatamente 0,75, 20 → < 0,75
+    assert ch_lecionada(cal, {"TER": 2}, cenario="A") == 76
+    assert frequencia_por_faltas(19, {"TER": 2}, cal) == 0.75
+    assert frequencia_por_faltas(20, {"TER": 2}, cal) < 0.75
+
+    # 2 aulas na SEG (CH 70): 17 faltas → ≥ 0,75, 18 → < 0,75
+    assert ch_lecionada(cal, {"SEG": 2}, cenario="A") == 70
+    assert frequencia_por_faltas(17, {"SEG": 2}, cal) >= 0.75
+    assert frequencia_por_faltas(18, {"SEG": 2}, cal) < 0.75
+
+    # REAL Estradas SEX/SEX: 18 faltas → 1 − 18/72
+    assert (
+        ch_lecionada(cal, {"SEX": 2}, cenario="REAL", curso="TÉCNICO EM ESTRADAS", sabado_reproduz="SEX")
+        == 72
+    )
+    res = frequencia_por_faltas(
+        18, {"SEX": 2}, cal, "REAL", curso="TÉCNICO EM ESTRADAS", sabado_reproduz="SEX"
+    )
+    assert res == 1.0 - 18.0 / 72.0
+
+
+def test_frequencia_por_faltas_series_e_ch_zero() -> None:
+    """Verifica suporte a pd.Series e caso de CH 0 (arranjo vazio) retornando NaN."""
+    # pd.Series devolve pd.Series com o mesmo índice
+    s_faltas = pd.Series([19, 20], index=["aluno_1", "aluno_2"])
+    res = frequencia_por_faltas(s_faltas, {"TER": 2}, cal=carregar_calendario())
+    assert isinstance(res, pd.Series)
+    assert list(res.index) == ["aluno_1", "aluno_2"]
+    assert res.loc["aluno_1"] == 0.75
+    assert res.loc["aluno_2"] < 0.75
+
+    # arranjo vazio → CH lecionada 0 → NaN (escalar e Series)
+    cal = carregar_calendario()
+    assert np.isnan(frequencia_por_faltas(10, {}, cal))
+    res_zero = frequencia_por_faltas(s_faltas, {}, cal)
+    assert isinstance(res_zero, pd.Series)
+    assert res_zero.isna().all()
+
+
+def test_faixa_frequencia_por_faltas() -> None:
+    """Verifica cálculo da faixa de frequência para 4 aulas semanais no cenário A."""
+    cal = carregar_calendario()
+    faixa = faixa_frequencia_por_faltas(20, 4, cal, "A")
+    assert faixa == (1.0 - 20.0 / 140.0, 1.0 - 20.0 / 152.0)
+
+
+def test_meses_por_bimestre_do_calendario() -> None:
+    """Verifica meses_por_bimestre_do_calendario igual a MESES_POR_BIMESTRE com dezembro no 4º."""
+    cal = carregar_calendario()
+    mapa_cal = meses_por_bimestre_do_calendario(cal)
+    esperado = dict(MESES_POR_BIMESTRE)
+    esperado[4] = list(esperado[4]) + ["dezembro"]
+    assert mapa_cal == esperado
+    assert mapa_cal[4] == ["outubro", "novembro", "dezembro"]
+
+
+def test_periodo_apuracao_com_calendario(caminho_xlsx: Path) -> None:
+    """Verifica periodo_apuracao integrado ao calendário nos cenários A e REAL."""
+    df = carregar_dae(caminho_xlsx)
+    cal = carregar_calendario()
+
+    p_sem = periodo_apuracao(df, bimestres=[1, 2])
+    p_cal = periodo_apuracao(df, calendario=cal, bimestres=[1, 2])
+
+    # meses_calendario/meses_lancados/parcial iguais aos da chamada sem calendário
+    for b in [1, 2]:
+        assert p_cal[b]["meses_calendario"] == p_sem[b]["meses_calendario"]
+        assert p_cal[b]["meses_lancados"] == p_sem[b]["meses_lancados"]
+        assert p_cal[b]["parcial"] == p_sem[b]["parcial"]
+
+    # dias_letivos 50 e 48
+    assert p_cal[1]["dias_letivos"] == 50
+    assert p_cal[2]["dias_letivos"] == 48
+
+    # dias_letivos_total 53 e 54
+    assert p_cal[1]["dias_letivos_total"] == 53
+    assert p_cal[2]["dias_letivos_total"] == 54
+
+    # dias_por_mes do 1º = {"fevereiro":5,"marco":23,"abril":20,"maio":5}
+    assert p_cal[1]["dias_por_mes"] == {
+        "fevereiro": 5,
+        "marco": 23,
+        "abril": 20,
+        "maio": 5,
+    }
+
+    # limite_diarios 22/05 e 14/08
+    assert p_cal[1]["limite_diarios"] == "22/05"
+    assert p_cal[2]["limite_diarios"] == "14/08"
+
+    # com cenario="REAL", curso="TÉCNICO EM ESTRADAS" → dias_letivos 50 e 49
+    p_real = periodo_apuracao(
+        df,
+        calendario=cal,
+        bimestres=[1, 2],
+        cenario="REAL",
+        curso="TÉCNICO EM ESTRADAS",
+    )
+    assert p_real[1]["dias_letivos"] == 50
+    assert p_real[2]["dias_letivos"] == 49
+
+
+def test_frequencia_por_disciplina_e_resumo_memoria() -> None:
+    """Verifica frequencia_por_disciplina e resumo_frequencia_por_disciplina com dados em memória (C17)."""
+    # 1. Dados fictícios em memória: disciplina com ch_bim_1 = 20 e faltas [0, 5, 6]
+    df_faltas = pd.DataFrame(
+        {
+            "matricula": ["20261010001", "20261010002", "20261010003"],
+            "nome": ["Aluno A", "Aluno B", "Aluno C"],
+            "MAT": [0, 5, 6],
+            "SEM_CH": [0, 5, 6],
+        }
+    )
+    legenda = {"MAT": "Matemática", "SEM_CH": "Disciplina Sem CH"}
+
+    # Disciplina casada da planilha (MAT): ch_bim_1 = 20, ch_bim_2 = 18
+    ch_casada = {
+        "MAT": {
+            "disciplina": "Matemática",
+            "aulas_sem": 2,
+            "ch_nominal": 80,
+            "ch_bim_1": 20,
+            "ch_bim_2": 18,
+            "ch_efetiva": 76,
+        }
+    }
+
+    # Apuração 1º BI
+    freq_b1 = frequencia_por_disciplina(df_faltas, legenda, ch_casada, bimestre=1)
+    resumo_b1 = resumo_frequencia_por_disciplina(df_faltas, legenda, ch_casada, bimestre=1)
+
+    # MAT: ch_bim_1 = 20 e faltas [0, 5, 6] → frequências [1,0; 0,75; 0,70], n_abaixo_75 = 1, limite_faltas_bim = 5
+    np.testing.assert_allclose(freq_b1["MAT"].tolist(), [1.0, 0.75, 0.70])
+    mat_b1 = next(r for r in resumo_b1 if r["disciplina"] == "Matemática")
+    assert mat_b1["fonte"] == "planilha"
+    assert mat_b1["aulas_sem"] == 2
+    assert mat_b1["ch_bim"] == 20
+    assert mat_b1["ch_efetiva_ano"] == 76
+    assert mat_b1["ch_nominal"] == 80
+    assert mat_b1["%_nominal"] == 76 / 80
+    assert mat_b1["limite_faltas_bim"] == 5
+    assert mat_b1["n_abaixo_75"] == 1
+    assert mat_b1["n_alunos"] == 3
+
+    # Disciplina sem CH → coluna NaN e fonte "sem horário" com n_abaixo_75 None
+    assert freq_b1["SEM_CH"].isna().all()
+    sem_ch_b1 = next(r for r in resumo_b1 if r["disciplina"] == "Disciplina Sem CH")
+    assert sem_ch_b1["fonte"] == "sem horário"
+    assert sem_ch_b1["ch_bim"] is None
+    assert sem_ch_b1["limite_faltas_bim"] is None
+    assert sem_ch_b1["n_abaixo_75"] is None
+
+    # A mesma disciplina sem CH com aulas_sem_estimadas={código: 2} no 1º BI
+    # → fonte "estimada", ch_bim "18–22" e n_abaixo_75 contado sobre 18
+    freq_est = frequencia_por_disciplina(
+        df_faltas,
+        legenda,
+        ch_casada,
+        bimestre=1,
+    )
+    resumo_est = resumo_frequencia_por_disciplina(
+        df_faltas,
+        legenda,
+        ch_casada,
+        bimestre=1,
+        aulas_sem_estimadas={"SEM_CH": 2},
+    )
+    # C17: frequencia_por_disciplina só usa CH da planilha — SEM_CH segue NaN mesmo com estimativa
+    assert freq_est["SEM_CH"].isna().all()
+
+    sem_ch_est = next(r for r in resumo_est if r["disciplina"] == "Disciplina Sem CH")
+    assert sem_ch_est["fonte"] == "estimada"
+    assert sem_ch_est["ch_bim"] == "18–22"
+    # n_abaixo_75 contado sobre 18: [1 - 0/18, 1 - 5/18, 1 - 6/18] -> 5 e 6 < 0.75 -> 2
+    assert sem_ch_est["n_abaixo_75"] == 2
+    assert sem_ch_est["limite_faltas_bim"] == 4
+
+    # Bimestre 2 usa ch_bim_2 (para MAT, ch_bim_2 = 18)
+    freq_b2 = frequencia_por_disciplina(df_faltas, legenda, ch_casada, bimestre=2)
+    resumo_b2 = resumo_frequencia_por_disciplina(df_faltas, legenda, ch_casada, bimestre=2)
+    mat_b2 = next(r for r in resumo_b2 if r["disciplina"] == "Matemática")
+
+    assert mat_b2["ch_bim"] == 18
+    assert mat_b2["limite_faltas_bim"] == 4
+    assert mat_b2["n_abaixo_75"] == 2
+    np.testing.assert_allclose(
+        freq_b2["MAT"].tolist(),
+        [1.0, 1.0 - 5 / 18, 1.0 - 6 / 18],
+    )
+
+    # O resumo não contém matrícula nem nome (só chaves de C17)
+    assert all("matricula" not in r and "nome" not in r for r in resumo_b1)
+    assert all("matricula" not in r and "nome" not in r for r in resumo_est)
+    assert len(resumo_b1) == 2
+
+

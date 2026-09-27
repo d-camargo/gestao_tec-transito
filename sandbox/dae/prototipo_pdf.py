@@ -10,6 +10,9 @@ Implementa as decisões de arquitetura:
   frequências por bimestre, acumulada ponderada, alerta '< 75%' destacado,
   legenda de siglas e nota sobre o pressuposto 'N/C' (Nada consta).
 - D11: Organização mensal das saídas em saida/<AAAA-MM>/ (ou saida/sintetico/ para dados sintéticos).
+- C14: Bloco 'Cruzamento com o mapa de turma' com métricas do mapa (resumo_mapa),
+  conciliação por bimestre (cruzar), recorte Pé-de-Meia (contagem_pe_de_meia) ou
+  aviso de pendência quando DAE for sintética.
 """
 
 from __future__ import annotations
@@ -42,22 +45,67 @@ for _p in (_DIR_DAE, _DIR_RAIZ):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+PASTA_DADOS: Path = _DIR_DAE / "dados"
+
+from core.manipulacao import processar_multiplos_bimestres
 from core.relatorios import COR_CABECALHO_TABELA, COR_TEXTO_CABECALHO_TABELA
 
 try:
-    from .carregar import carregar_dae
+    from .calendario import (
+        ANO_PADRAO,
+        CAMINHO_MD_PADRAO,
+        Calendario,
+        carregar_calendario,
+        ch_nominal,
+        faixa_ch,
+        sabados_do_responsavel,
+    )
+    from .carregar import _normalizar_matricula, carregar_dae
+    from .ch_efetiva import (
+        carregar_ch_efetiva,
+        casar_disciplinas,
+        ch_da_turma,
+        divergencias_calendario,
+        normalizar_disciplina,
+        nota_sabados,
+        resumo_por_carga,
+    )
+    from .cruzamento import contagem_pe_de_meia, cruzar, resumo_mapa
     from .frequencia import (
         MESES_POR_BIMESTRE,
+        limite_faltas,
         mes_referencia,
         periodo_apuracao,
+        resumo_frequencia_por_disciplina,
         tabela_frequencia,
     )
 except ImportError:
-    from carregar import carregar_dae
+    from calendario import (
+        ANO_PADRAO,
+        CAMINHO_MD_PADRAO,
+        Calendario,
+        carregar_calendario,
+        ch_nominal,
+        faixa_ch,
+        sabados_do_responsavel,
+    )
+    from carregar import _normalizar_matricula, carregar_dae
+    from ch_efetiva import (
+        carregar_ch_efetiva,
+        casar_disciplinas,
+        ch_da_turma,
+        divergencias_calendario,
+        normalizar_disciplina,
+        nota_sabados,
+        resumo_por_carga,
+    )
+    from cruzamento import contagem_pe_de_meia, cruzar, resumo_mapa
     from frequencia import (
         MESES_POR_BIMESTRE,
+        limite_faltas,
         mes_referencia,
         periodo_apuracao,
+        resumo_frequencia_por_disciplina,
         tabela_frequencia,
     )
 
@@ -194,7 +242,9 @@ def obter_dados_sinteticos() -> pd.DataFrame:
             "acumulado_dae": 0.60,
         },
     ]
-    return pd.DataFrame(dados)
+    df = pd.DataFrame(dados)
+    df.attrs["sintetico"] = True
+    return df
 
 
 def determinar_caminho_saida(
@@ -244,20 +294,49 @@ def montar_flowables(
     df: pd.DataFrame,
     bimestres: Sequence[int] = (1, 2, 3),
     curso: str = "TÉCNICO EM TRÂNSITO",
+    cenario: str = "A",
+    calendario: Calendario | Path | str | None = None,
+    sabado_reproduz: str | None = None,
+    cruzamento: Sequence[str | Path] | Sequence[object] | dict | None = None,
+    ch_efetiva: str | Path | pd.DataFrame | None = None,
 ) -> list:
     """Monta a lista de flowables do relatório PDF na ordem especificada.
 
     Ordem:
-        (i) Bloco 'Período de apuração da frequência' (D6 / D10-iii)
-        (ii) Trecho da tabela 2.1 com coluna extra 'Prog.' (siglas de programas)
-        (iii) Quadro 'Tratamento de dados pessoais (LGPD)' com NOTA_LGPD (D10-ii)
-        (iv) Seção 'Estudantes acompanhados pela Assistência Estudantil' com
+        (i) Bloco 'Período de apuração da frequência' (D6 / D10-iii / C7)
+        (ii) Bloco 'Calendário acadêmico e carga horária efetiva' (C7)
+        (iii) Trecho da tabela 2.1 com coluna extra 'Prog.' (siglas de programas)
+        (iv) Quadro 'Tratamento de dados pessoais (LGPD)' com NOTA_LGPD (D10-ii)
+        (v) Seção 'Estudantes acompanhados pela Assistência Estudantil' com
              frequências, alerta < 75%, legenda e nota Pé-de-Meia (D10-iv).
+        (vi) Seção 'Cruzamento com o mapa de turma' (C14) quando cruzamento for fornecido.
+        (vii) Bloco 'CH efetiva por disciplina (horário real)' (C18).
     """
+    if isinstance(calendario, Calendario):
+        cal = calendario
+    else:
+        cal = carregar_calendario(caminho=calendario)
+
+    cenario_norm = (cenario or "A").upper().strip()
+    if cenario_norm not in ("A", "REAL"):
+        raise ValueError(f"Cenário inválido: '{cenario}'. Use 'A' ou 'REAL'.")
+
+    sab_rep_norm = sabado_reproduz.upper().strip() if sabado_reproduz else None
+    if sab_rep_norm is not None and sab_rep_norm not in ("SEG", "TER", "QUA", "QUI", "SEX"):
+        raise ValueError(
+            f"sabado_reproduz inválido: '{sabado_reproduz}'. Escolha entre SEG, TER, QUA, QUI, SEX."
+        )
+
     lista_bimestres = [int(b) for b in bimestres]
     ref_mes = mes_referencia(df)
     ref_mes_nome = ref_mes.capitalize() if ref_mes else "Não identificado"
-    info_periodo = periodo_apuracao(df, bimestres=lista_bimestres)
+    info_periodo = periodo_apuracao(
+        df,
+        bimestres=lista_bimestres,
+        calendario=cal,
+        cenario=cenario_norm,
+        curso=curso,
+    )
     df_freq = tabela_frequencia(df, bimestres=lista_bimestres)
 
     styles = getSampleStyleSheet()
@@ -349,20 +428,20 @@ def montar_flowables(
     )
     story.append(
         Paragraph(
-            f"Relatório Integrado — Curso: <b>{curso}</b> | Ano Letivo: 2026",
+            f"Relatório Integrado — Curso: <b>{curso}</b> | Ano Letivo: {cal.ano} | Cenário: <b>{cenario_norm}</b>",
             style_subtitulo,
         )
     )
 
     # -------------------------------------------------------------------------
-    # (i) Bloco "Período de apuração da frequência" (D6/D10-iii)
+    # (i) Bloco "Período de apuração da frequência" (D6/D10-iii/C7)
     # -------------------------------------------------------------------------
     story.append(
         Paragraph("<b>1. Período de apuração da frequência</b>", style_h2)
     )
     story.append(
         Paragraph(
-            f"Mês de referência do snapshot: <b>{ref_mes_nome}/2026</b>",
+            f"Mês de referência do snapshot: <b>{ref_mes_nome}/{cal.ano}</b>",
             style_corpo,
         )
     )
@@ -371,6 +450,8 @@ def montar_flowables(
         Paragraph("<b>Bimestre</b>", style_cab),
         Paragraph("<b>Meses do Calendário</b>", style_cab),
         Paragraph("<b>Meses Lançados</b>", style_cab),
+        Paragraph(f"<b>Dias letivos (cenário {cenario_norm})</b>", style_cab),
+        Paragraph("<b>Diários até</b>", style_cab),
         Paragraph("<b>Situação</b>", style_cab),
     ]]
 
@@ -379,8 +460,16 @@ def montar_flowables(
         meses_cal = dados_b.get("meses_calendario", [])
         meses_lanc = dados_b.get("meses_lancados", [])
         parcial = dados_b.get("parcial", False)
+        dias_let = dados_b.get("dias_letivos", "—")
+        limite_diarios = dados_b.get("limite_diarios", "—")
+        dias_m = dados_b.get("dias_por_mes", {})
 
-        cal_str = ", ".join(m.capitalize() for m in meses_cal) if meses_cal else "—"
+        if dias_m:
+            cal_partes = [f"{m.capitalize()} ({qtd} d)" for m, qtd in dias_m.items()]
+            cal_str = ", ".join(cal_partes)
+        else:
+            cal_str = ", ".join(m.capitalize() for m in meses_cal) if meses_cal else "—"
+
         lanc_str = ", ".join(m.capitalize() for m in meses_lanc) if meses_lanc else "Nenhum"
 
         if parcial:
@@ -394,12 +483,14 @@ def montar_flowables(
             Paragraph(f"<b>{b}º Bimestre</b>", style_cel_centro),
             Paragraph(cal_str, style_cel),
             Paragraph(lanc_str, style_cel),
+            Paragraph(str(dias_let), style_cel_centro),
+            Paragraph(str(limite_diarios), style_cel_centro),
             sit_p,
         ])
 
     tab_periodo = Table(
         linhas_periodo,
-        colWidths=[2.8 * cm, 6.0 * cm, 5.7 * cm, 3.0 * cm],
+        colWidths=[2.0 * cm, 5.2 * cm, 3.4 * cm, 2.7 * cm, 2.0 * cm, 2.2 * cm],
     )
     tab_periodo.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
@@ -414,10 +505,213 @@ def montar_flowables(
     story.append(Spacer(1, 0.35 * cm))
 
     # -------------------------------------------------------------------------
-    # (ii) Trecho da tabela 2.1 com a coluna extra “Prog.” (siglas de programas)
+    # (ii) Bloco "Calendário acadêmico e carga horária efetiva" (C7)
     # -------------------------------------------------------------------------
     story.append(
-        Paragraph("<b>2. Desempenho e Frequência por Aluno (Trecho Tabela 2.1 com Programas)</b>", style_h2)
+        Paragraph("<b>2. Calendário acadêmico e carga horária efetiva</b>", style_h2)
+    )
+
+    cal_arquivo_nome = (
+        Path(calendario).name
+        if (calendario is not None and not isinstance(calendario, Calendario))
+        else CAMINHO_MD_PADRAO.name
+    )
+    story.append(
+        Paragraph(
+            f"<b>Fonte:</b> {cal.titulo} (arquivo <code>{cal_arquivo_nome}</code>), "
+            f"homologado pela <b>{cal.deliberacao}</b>.",
+            style_corpo,
+        )
+    )
+
+    sabs_curso_info = []
+    if curso:
+        for b_num in sorted(cal.bimestres.keys()):
+            for s_data in sabados_do_responsavel(cal, responsavel=curso, bimestres=[b_num]):
+                sabs_curso_info.append((s_data, b_num))
+
+    if cenario_norm == "REAL":
+        if sabs_curso_info:
+            sabs_str = ", ".join(
+                f"{d.strftime('%d/%m')} ({b}º BI)" for d, b in sabs_curso_info
+            )
+            txt_sabs = f" Sábados letivos atribuídos ao curso ({curso}): <b>{sabs_str}</b>."
+        else:
+            txt_sabs = f" Nenhum sábado letivo específico atribuído ao curso ({curso})."
+
+        if sab_rep_norm:
+            txt_rep = f" O sábado letivo reproduz a grade horária de <b>{sab_rep_norm}</b>."
+        else:
+            txt_rep = " Horário de dia útil reproduzido pelos sábados apurado em faixa."
+
+        texto_cenario = (
+            f"Apuração sob o <b>cenário REAL</b>: considera as aulas regulares em dias úteis "
+            f"somadas aos sábados letivos sob responsabilidade da coordenação do curso.{txt_sabs}{txt_rep} "
+            f"Sábados de áreas acadêmicas específicas não entram no REAL por ausência de "
+            f"mapeamento determinístico entre disciplina e área."
+        )
+    else:
+        texto_cenario = (
+            "Apuração sob o <b>cenário A</b> (padrão institucional / piso): considera apenas as aulas "
+            "em dias úteis regulares (segunda a sexta-feira), desconsiderando sábados letivos. É o "
+            "cenário conservador oficial para monitoramento de frequência e alertas precoces (&lt; 75%). "
+            "O <b>cenário REAL</b> incorpora os sábados letivos temáticos atribuídos à coordenação do curso."
+        )
+    story.append(Paragraph(texto_cenario, style_corpo))
+
+    # Tabela dias letivos bimestre × dia útil do cenário ativo
+    incluir_col_sab = (cenario_norm == "REAL" and sab_rep_norm is None)
+    if incluir_col_sab:
+        cab_sem = [
+            Paragraph("<b>Bimestre</b>", style_cab),
+            Paragraph("<b>SEG</b>", style_cab),
+            Paragraph("<b>TER</b>", style_cab),
+            Paragraph("<b>QUA</b>", style_cab),
+            Paragraph("<b>QUI</b>", style_cab),
+            Paragraph("<b>SEX</b>", style_cab),
+            Paragraph("<b>SÁB (Curso)</b>", style_cab),
+            Paragraph("<b>Total</b>", style_cab),
+        ]
+        col_w_sem = [2.8 * cm, 2.1 * cm, 2.1 * cm, 2.1 * cm, 2.1 * cm, 2.1 * cm, 2.2 * cm, 2.0 * cm]
+    else:
+        cab_sem = [
+            Paragraph("<b>Bimestre</b>", style_cab),
+            Paragraph("<b>SEG</b>", style_cab),
+            Paragraph("<b>TER</b>", style_cab),
+            Paragraph("<b>QUA</b>", style_cab),
+            Paragraph("<b>QUI</b>", style_cab),
+            Paragraph("<b>SEX</b>", style_cab),
+            Paragraph("<b>Total</b>", style_cab),
+        ]
+        col_w_sem = [3.5 * cm, 2.3 * cm, 2.3 * cm, 2.3 * cm, 2.3 * cm, 2.3 * cm, 2.5 * cm]
+
+    linhas_sem = [cab_sem]
+    somas_col = {"SEG": 0, "TER": 0, "QUA": 0, "QUI": 0, "SEX": 0, "SAB": 0, "Total": 0}
+
+    for b_num in (1, 2, 3, 4):
+        bim_obj = cal.bimestres.get(b_num)
+        if not bim_obj:
+            continue
+        d_sem = {d: bim_obj.dias_semana.get(d, 0) for d in ("SEG", "TER", "QUA", "QUI", "SEX")}
+        n_sab_curso = len(sabados_do_responsavel(cal, responsavel=curso, bimestres=[b_num])) if (curso and cenario_norm == "REAL") else 0
+
+        if cenario_norm == "REAL" and sab_rep_norm:
+            d_sem[sab_rep_norm] += n_sab_curso
+
+        tot_b = sum(d_sem.values()) + (n_sab_curso if incluir_col_sab else 0)
+
+        for d in ("SEG", "TER", "QUA", "QUI", "SEX"):
+            somas_col[d] += d_sem[d]
+        somas_col["SAB"] += n_sab_curso
+        somas_col["Total"] += tot_b
+
+        row_b = [Paragraph(f"<b>{b_num}º Bimestre</b>", style_cel_centro)]
+        for d in ("SEG", "TER", "QUA", "QUI", "SEX"):
+            row_b.append(Paragraph(str(d_sem[d]), style_cel_centro))
+        if incluir_col_sab:
+            row_b.append(Paragraph(str(n_sab_curso), style_cel_centro))
+        row_b.append(Paragraph(f"<b>{tot_b}</b>", style_cel_centro))
+        linhas_sem.append(row_b)
+
+    row_soma = [Paragraph("<b>Soma</b>", style_cel_centro)]
+    for d in ("SEG", "TER", "QUA", "QUI", "SEX"):
+        row_soma.append(Paragraph(f"<b>{somas_col[d]}</b>", style_cel_centro))
+    if incluir_col_sab:
+        row_soma.append(Paragraph(f"<b>{somas_col['SAB']}</b>", style_cel_centro))
+    row_soma.append(Paragraph(f"<b>{somas_col['Total']}</b>", style_cel_centro))
+    linhas_sem.append(row_soma)
+
+    tab_sem = Table(linhas_sem, colWidths=col_w_sem)
+    tab_sem.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+        ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f0f4f8")),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+    ]))
+    story.append(tab_sem)
+    story.append(Spacer(1, 0.2 * cm))
+
+    # Nota do resíduo de fronteira (maio/outubro/dezembro)
+    story.append(
+        Paragraph(
+            "<b>Nota sobre divisão de fronteiras entre bimestres:</b> Meses de transição têm dias letivos "
+            "distribuídos oficialmente: <b>maio</b> divide-se em 5 dias (1º BI) e 17 dias (2º BI), "
+            "totalizando 22 dias; <b>outubro</b> divide-se em 3 dias (3º BI) e 19 dias (4º BI), "
+            "totalizando 22 dias; e <b>dezembro</b> possui 4 dias letivos (alocados no 4º BI).",
+            style_caption,
+        )
+    )
+    story.append(Spacer(1, 0.25 * cm))
+
+    # Tabela de faixas de carga horária efetiva (1, 2, 3, 4 CH)
+    linhas_faixas = [[
+        Paragraph("<b>Aulas/sem</b>", style_cab),
+        Paragraph("<b>Nominal</b>", style_cab),
+        Paragraph("<b>Cenário A (Mín–Máx)</b>", style_cab),
+        Paragraph("<b>Cenário REAL (Mín–Máx)</b>", style_cab),
+        Paragraph("<b>Limite Faltas (75%)*</b>", style_cab),
+        Paragraph("<b>Pior Arranjo</b>", style_cab),
+    ]]
+
+    for ch in (1, 2, 3, 4):
+        nom = ch_nominal(ch)
+        min_a, dist_a, max_a, _ = faixa_ch(cal, ch, cenario="A")
+        min_r, dist_r, max_r, _ = faixa_ch(
+            cal, ch, cenario="REAL", curso=curso if curso else "TÉCNICO EM ESTRADAS"
+        )
+
+        if cenario_norm == "REAL":
+            min_usado = min_r
+            dist_usado = dist_r
+        else:
+            min_usado = min_a
+            dist_usado = dist_a
+
+        lf = limite_faltas(min_usado)
+        pior_arr = ", ".join(f"{d} ({qtd})" for d, qtd in sorted(dist_usado.items()))
+
+        linhas_faixas.append([
+            Paragraph(f"{ch} h/a", style_cel_centro),
+            Paragraph(f"{nom} h/a", style_cel_centro),
+            Paragraph(f"{min_a} a {max_a} h/a", style_cel_centro),
+            Paragraph(f"{min_r} a {max_r} h/a", style_cel_centro),
+            Paragraph(f"{lf} faltas", style_cel_centro),
+            Paragraph(pior_arr, style_cel_centro),
+        ])
+
+    tab_faixas = Table(
+        linhas_faixas,
+        colWidths=[2.6 * cm, 2.0 * cm, 3.2 * cm, 3.2 * cm, 3.1 * cm, 3.4 * cm],
+    )
+    tab_faixas.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+        ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+    ]))
+    story.append(tab_faixas)
+    story.append(Spacer(1, 0.1 * cm))
+    story.append(
+        Paragraph(
+            f"<b>* Limite legal de faltas (Art. 24, LDB):</b> Máximo de faltas para manter frequência "
+            f"&ge; 75,0%, calculado sobre o piso da carga horária efetiva no cenário ativo ({cenario_norm}).",
+            style_caption,
+        )
+    )
+    story.append(Spacer(1, 0.35 * cm))
+
+    # -------------------------------------------------------------------------
+    # (iii) Trecho da tabela 2.1 com a coluna extra “Prog.” (siglas de programas)
+    # -------------------------------------------------------------------------
+    story.append(
+        Paragraph("<b>3. Desempenho e Frequência por Aluno (Trecho Tabela 2.1 com Programas)</b>", style_h2)
     )
     story.append(
         Paragraph(
@@ -483,10 +777,10 @@ def montar_flowables(
     story.append(Spacer(1, 0.35 * cm))
 
     # -------------------------------------------------------------------------
-    # (iii) Quadro “Tratamento de dados pessoais (LGPD)” com NOTA_LGPD (D10-ii)
+    # (iv) Quadro “Tratamento de dados pessoais (LGPD)” com NOTA_LGPD (D10-ii)
     # -------------------------------------------------------------------------
     story.append(
-        Paragraph("<b>3. Tratamento de dados pessoais (LGPD)</b>", style_h2)
+        Paragraph("<b>4. Tratamento de dados pessoais (LGPD)</b>", style_h2)
     )
 
     quadro_lgpd_conteudo = [
@@ -508,10 +802,10 @@ def montar_flowables(
     story.append(Spacer(1, 0.35 * cm))
 
     # -------------------------------------------------------------------------
-    # (iv) Seção “Estudantes acompanhados pela Assistência Estudantil” (D10-iv)
+    # (v) Seção “Estudantes acompanhados pela Assistência Estudantil” (D10-iv)
     # -------------------------------------------------------------------------
     story.append(
-        Paragraph("<b>4. Estudantes acompanhados pela Assistência Estudantil</b>", style_h2)
+        Paragraph("<b>5. Estudantes acompanhados pela Assistência Estudantil</b>", style_h2)
     )
 
     cab_estudantes = [
@@ -603,6 +897,471 @@ def montar_flowables(
     ]
     story.append(KeepTogether(bloco_iv))
 
+    # -------------------------------------------------------------------------
+    # (vi) Seção “Cruzamento com o mapa de turma” (C14)
+    # -------------------------------------------------------------------------
+    conjuntos: list = []
+    if cruzamento:
+        story.append(Spacer(1, 0.35 * cm))
+        story.append(
+            Paragraph("<b>6. Cruzamento com o mapa de turma</b>", style_h2)
+        )
+
+        if isinstance(cruzamento, (str, Path)):
+            conjuntos = processar_multiplos_bimestres([str(cruzamento)])
+        elif isinstance(cruzamento, (list, tuple)) and cruzamento:
+            primeiro = cruzamento[0]
+            if isinstance(primeiro, (str, Path)):
+                conjuntos = processar_multiplos_bimestres([str(p) for p in cruzamento])
+            elif isinstance(primeiro, (tuple, list)) and len(primeiro) >= 4:
+                conjuntos = list(cruzamento)
+            else:
+                conjuntos = processar_multiplos_bimestres([str(p) for p in cruzamento])
+
+        if conjuntos:
+            res_mapa = resumo_mapa(conjuntos)[0]
+
+            linhas_mapa = [
+                [
+                    Paragraph("<b>Alunos (Mapa)</b>", style_cab),
+                    Paragraph("<b>Disciplinas</b>", style_cab),
+                    Paragraph("<b>Total Faltas</b>", style_cab),
+                    Paragraph("<b>Bimestre</b>", style_cab),
+                ],
+                [
+                    Paragraph(str(res_mapa["n_alunos"]), style_cel_centro),
+                    Paragraph(str(res_mapa["n_disciplinas"]), style_cel_centro),
+                    Paragraph(str(res_mapa["faltas_total"]), style_cel_centro),
+                    Paragraph(f"{res_mapa['bimestre_num']}º", style_cel_centro),
+                ],
+            ]
+            tab_mapa = Table(
+                linhas_mapa,
+                colWidths=[4.5 * cm, 4.0 * cm, 4.5 * cm, 4.5 * cm],
+            )
+            tab_mapa.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+            ]))
+            story.append(tab_mapa)
+            story.append(Spacer(1, 0.2 * cm))
+
+            invalidas = res_mapa["n_alunos"] - res_mapa["n_matriculas_validas"]
+            if res_mapa["n_matriculas_duplicadas"] > 0 or invalidas > 0:
+                story.append(
+                    Paragraph(
+                        f"<b>Validações de consistência:</b> Matrículas duplicadas: {res_mapa['n_matriculas_duplicadas']} | "
+                        f"Matrículas fora do padrão (inválidas): {invalidas}",
+                        style_caption,
+                    )
+                )
+                story.append(Spacer(1, 0.15 * cm))
+
+            dae_sintetica = bool(df.attrs.get("sintetico", False))
+
+            if dae_sintetica:
+                quadro_pendencia = [
+                    Paragraph(
+                        "<b>Cruzamento pendente:</b> Planilha oficial de acompanhamento discente da DAE "
+                        "não fornecida (base sintética em uso). A conciliação individual de faltas e o "
+                        "cruzamento com os registros da Assistência Estudantil estão pendentes até a "
+                        "disponibilização do arquivo oficial da DAE.",
+                        style_corpo,
+                    )
+                ]
+                tab_pendencia = Table([[quadro_pendencia]], colWidths=[17.5 * cm])
+                tab_pendencia.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff9e6")),
+                    ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#d9822b")),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ]))
+                story.append(tab_pendencia)
+            else:
+                df_unido, resumo = cruzar(df, conjuntos, bimestres=lista_bimestres)
+
+                tot_cruz = resumo["total"]
+                pct_dois = f"{resumo['nos_dois'] / tot_cruz:.1%}" if tot_cruz > 0 else "—"
+                pct_app = f"{resumo['so_app'] / tot_cruz:.1%}" if tot_cruz > 0 else "—"
+                pct_dae = f"{resumo['so_dae'] / tot_cruz:.1%}" if tot_cruz > 0 else "—"
+
+                linhas_cob = [
+                    [
+                        Paragraph("<b>Situação da Cobertura</b>", style_cab),
+                        Paragraph("<b>Estudantes</b>", style_cab),
+                        Paragraph("<b>Percentual</b>", style_cab),
+                    ],
+                    [
+                        Paragraph("Nos dois (conciliados)", style_cel),
+                        Paragraph(str(resumo["nos_dois"]), style_cel_centro),
+                        Paragraph(pct_dois, style_cel_centro),
+                    ],
+                    [
+                        Paragraph("Só no Mapa de Turma", style_cel),
+                        Paragraph(str(resumo["so_app"]), style_cel_centro),
+                        Paragraph(pct_app, style_cel_centro),
+                    ],
+                    [
+                        Paragraph("Só na DAE", style_cel),
+                        Paragraph(str(resumo["so_dae"]), style_cel_centro),
+                        Paragraph(pct_dae, style_cel_centro),
+                    ],
+                    [
+                        Paragraph("<b>Total</b>", style_cel),
+                        Paragraph(f"<b>{tot_cruz}</b>", style_cel_centro),
+                        Paragraph("100,0%", style_cel_centro),
+                    ],
+                ]
+                tab_cob = Table(linhas_cob, colWidths=[8.5 * cm, 4.5 * cm, 4.5 * cm])
+                tab_cob.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
+                    ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f0f4f8")),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                ]))
+                story.append(tab_cob)
+                story.append(Spacer(1, 0.25 * cm))
+
+                curso_alvo = None
+                for item in conjuntos:
+                    meta = item[3] if len(item) > 3 and isinstance(item[3], dict) else {}
+                    curso_alvo = meta.get("curso_amigavel") or meta.get("curso")
+                    if curso_alvo:
+                        break
+                if not curso_alvo:
+                    curso_alvo = curso
+
+                contagem_curso = contagem_pe_de_meia(df, curso_contem=curso_alvo)
+
+                mats_mapa = set()
+                for item in conjuntos:
+                    df_f = item[1]
+                    if "matricula" in df_f.columns:
+                        mats_mapa.update(df_f["matricula"].apply(_normalizar_matricula).dropna().unique())
+
+                contagem_mapa = contagem_pe_de_meia(df, matriculas=mats_mapa)
+
+                linhas_pdm = [
+                    [
+                        Paragraph("<b>Situação Pé-de-Meia</b>", style_cab),
+                        Paragraph("<b>Estudantes no Mapa</b>", style_cab),
+                        Paragraph(f"<b>Total no Curso ({curso_alvo or 'DAE'})</b>", style_cab),
+                    ],
+                    [
+                        Paragraph("Elegível", style_cel),
+                        Paragraph(str(contagem_mapa["elegivel"]), style_cel_centro),
+                        Paragraph(str(contagem_curso["elegivel"]), style_cel_centro),
+                    ],
+                    [
+                        Paragraph("Não elegível", style_cel),
+                        Paragraph(str(contagem_mapa["nao_elegivel"]), style_cel_centro),
+                        Paragraph(str(contagem_curso["nao_elegivel"]), style_cel_centro),
+                    ],
+                    [
+                        Paragraph("N/C (Nada consta)", style_cel),
+                        Paragraph(str(contagem_mapa["nada_consta"]), style_cel_centro),
+                        Paragraph(str(contagem_curso["nada_consta"]), style_cel_centro),
+                    ],
+                ]
+                if contagem_mapa["indefinida"] > 0 or contagem_curso["indefinida"] > 0:
+                    linhas_pdm.append([
+                        Paragraph("Elegibilidade indefinida", style_cel),
+                        Paragraph(str(contagem_mapa["indefinida"]), style_cel_centro),
+                        Paragraph(str(contagem_curso["indefinida"]), style_cel_centro),
+                    ])
+                linhas_pdm.append([
+                    Paragraph("<b>Total</b>", style_cel),
+                    Paragraph(f"<b>{contagem_mapa['total']}</b>", style_cel_centro),
+                    Paragraph(f"<b>{contagem_curso['total']}</b>", style_cel_centro),
+                ])
+
+                tab_pdm = Table(linhas_pdm, colWidths=[7.5 * cm, 5.0 * cm, 5.0 * cm])
+                tab_pdm.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
+                    ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f0f4f8")),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                ]))
+                story.append(tab_pdm)
+
+                diff_msgs = []
+                for b in lista_bimestres:
+                    col_diff = f"diff_faltas_bim_{b}"
+                    if col_diff in df_unido.columns:
+                        diff_abs = df_unido.loc[df_unido["_merge"] == "both", col_diff].dropna().abs()
+                        if len(diff_abs) > 0:
+                            med = float(diff_abs.median())
+                            p90 = float(diff_abs.quantile(0.90))
+                            diff_msgs.append(f"{b}º BI: mediana {med:.1f}, P90 {p90:.1f}")
+                if diff_msgs:
+                    story.append(Spacer(1, 0.15 * cm))
+                    story.append(
+                        Paragraph("<b>Discrepância de faltas (|diff_faltas|):</b> " + " | ".join(diff_msgs), style_caption)
+                    )
+
+    # -------------------------------------------------------------------------
+    # (vii) Bloco “CH efetiva por disciplina (horário real)” (C18)
+    # -------------------------------------------------------------------------
+    num_sec = "7." if cruzamento else "6."
+
+    # C18: default = dados/CH_Efetiva_Disciplinas_Integrado_<ANO_PADRAO>.xlsx,
+    # se existir; planilha inválida propaga o erro da carga (não é "ausente").
+    if isinstance(ch_efetiva, pd.DataFrame):
+        df_ch = ch_efetiva
+        nome_planilha = "planilha fornecida em memória"
+    else:
+        caminho_ch_resolvido = (
+            Path(ch_efetiva)
+            if ch_efetiva is not None
+            else PASTA_DADOS / f"CH_Efetiva_Disciplinas_Integrado_{ANO_PADRAO}.xlsx"
+        )
+        nome_planilha = caminho_ch_resolvido.name
+        df_ch = carregar_ch_efetiva(caminho_ch_resolvido) if caminho_ch_resolvido.exists() else None
+
+    if df_ch is None:
+        story.append(Spacer(1, 0.35 * cm))
+        story.append(
+            Paragraph(f"<b>{num_sec} CH efetiva por disciplina (horário real)</b>", style_h2)
+        )
+        quadro_ausente = [
+            Paragraph(
+                "<b>Planilha de CH efetiva ausente:</b> frequência por disciplina usa a faixa do calendário. "
+                "O detalhamento das horas-aula lecionadas por disciplina depende da disponibilização "
+                "da planilha de horários em sandbox/dae/dados/.",
+                style_corpo,
+            )
+        ]
+        tab_ausente = Table([[quadro_ausente]], colWidths=[17.5 * cm])
+        tab_ausente.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff9e6")),
+            ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#d9822b")),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(tab_ausente)
+    else:
+        divs = divergencias_calendario(df_ch, cal)
+        nota_sab = nota_sabados(cal, curso)
+
+        story.append(Spacer(1, 0.35 * cm))
+        story.append(
+            Paragraph(f"<b>{num_sec} CH efetiva por disciplina (horário real)</b>", style_h2)
+        )
+        story.append(
+            Paragraph(
+                f"<b>Fonte:</b> planilha <code>{nome_planilha}</code> (cenário A — sem sábados; "
+                f"origem: {df_ch.attrs.get('ch_origem', 'planilha')}). "
+                f"Divergências com o calendário oficial: {len(divs)}.",
+                style_corpo,
+            )
+        )
+        for d in divs:
+            story.append(Paragraph(f"• {d}", style_caption))
+
+        if not conjuntos:
+            story.append(Spacer(1, 0.15 * cm))
+
+            # C18: sem mapas, só o resumo_por_carga das linhas do --curso
+            alvo_curso = normalizar_disciplina(str(curso)).lower().strip()
+            df_carga = df_ch[
+                df_ch["curso"].apply(lambda c: alvo_curso in normalizar_disciplina(c).lower())
+            ]
+            res_carga = resumo_por_carga(df_carga)
+
+            tot_disc = res_carga["total"]
+            pct_abaixo = f"{res_carga['< 90%'] / tot_disc:.1%}" if tot_disc > 0 else "—"
+            pct_90_95 = f"{res_carga['90–95%'] / tot_disc:.1%}" if tot_disc > 0 else "—"
+            pct_95_mais = f"{res_carga['≥ 95%'] / tot_disc:.1%}" if tot_disc > 0 else "—"
+
+            linhas_dist = [
+                [
+                    Paragraph("<b>Faixa de Carga Horária (% da nominal)</b>", style_cab),
+                    Paragraph("<b>Disciplinas na Grade</b>", style_cab),
+                    Paragraph("<b>Percentual</b>", style_cab),
+                ],
+                [
+                    Paragraph("< 90%", style_cel),
+                    Paragraph(str(res_carga["< 90%"]), style_cel_centro),
+                    Paragraph(pct_abaixo, style_cel_centro),
+                ],
+                [
+                    Paragraph("90–95%", style_cel),
+                    Paragraph(str(res_carga["90–95%"]), style_cel_centro),
+                    Paragraph(pct_90_95, style_cel_centro),
+                ],
+                [
+                    Paragraph("≥ 95%", style_cel),
+                    Paragraph(str(res_carga["≥ 95%"]), style_cel_centro),
+                    Paragraph(pct_95_mais, style_cel_centro),
+                ],
+                [
+                    Paragraph("<b>Total</b>", style_cel),
+                    Paragraph(f"<b>{tot_disc}</b>", style_cel_centro),
+                    Paragraph("100,0%", style_cel_centro),
+                ],
+            ]
+            tab_dist = Table(linhas_dist, colWidths=[8.5 * cm, 4.5 * cm, 4.5 * cm])
+            tab_dist.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
+                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f0f4f8")),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+            ]))
+            story.append(tab_dist)
+            story.append(Spacer(1, 0.2 * cm))
+
+            quadro_aviso_mapa = [
+                Paragraph(
+                    "<b>Mapa da turma não informado:</b> para CH por disciplina, informe o mapa da turma.",
+                    style_corpo,
+                )
+            ]
+            tab_aviso = Table([[quadro_aviso_mapa]], colWidths=[17.5 * cm])
+            tab_aviso.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff9e6")),
+                ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#d9822b")),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ]))
+            story.append(tab_aviso)
+            story.append(Spacer(1, 0.15 * cm))
+            story.append(Paragraph(f"<b>Sábados letivos:</b> {nota_sab}", style_caption))
+        else:
+            for df_notas_cj, df_faltas_cj, legenda_cj, meta_cj in conjuntos:
+                curso_alvo = meta_cj.get("curso_amigavel") or meta_cj.get("curso") or curso
+                serie_val = meta_cj.get("serie")
+                if serie_val is None:
+                    turma_str = str(meta_cj.get("turma", ""))
+                    m_s = re.search(r"-(\d)[A-Z]", turma_str) or re.search(r"(\d)[ªa]\s*s[ée]rie", turma_str, re.I)
+                    serie_alvo = int(m_s.group(1)) if m_s else 2
+                else:
+                    serie_alvo = int(serie_val)
+                turma_alvo = meta_cj.get("turma") or "A"
+                bim_cj = int(meta_cj.get("bimestre_num") or (lista_bimestres[0] if lista_bimestres else 1))
+
+                df_turma = ch_da_turma(df_ch, curso_alvo, serie_alvo, turma_alvo)
+                ch_casada, sem_linha = casar_disciplinas(legenda_cj, df_turma)
+                resumo_freq = resumo_frequencia_por_disciplina(
+                    df_faltas_cj,
+                    legenda_cj,
+                    ch_casada,
+                    bimestre=bim_cj,
+                    cal=cal,
+                )
+
+                story.append(
+                    Paragraph(
+                        f"<b>Resumo da oferta:</b> {len(ch_casada)} disciplinas da planilha, "
+                        f"{len(sem_linha)} sem horário.",
+                        style_corpo,
+                    )
+                )
+                story.append(Spacer(1, 0.15 * cm))
+
+                linhas_tab_ch = [
+                    [
+                        Paragraph("<b>Disciplina</b>", style_cab),
+                        Paragraph("<b>Aulas/sem</b>", style_cab),
+                        Paragraph(f"<b>CH {bim_cj}º BI</b>", style_cab),
+                        Paragraph("<b>CH efetiva no ano</b>", style_cab),
+                        Paragraph("<b>% do nominal</b>", style_cab),
+                        Paragraph("<b>Limite de faltas p/ 75%</b>", style_cab),
+                        Paragraph("<b>&lt; 75% freq.</b>", style_cab),
+                        Paragraph("<b>Fonte</b>", style_cab),
+                    ]
+                ]
+
+                itens_casados = [r for r in resumo_freq if r["fonte"] == "planilha"]
+                itens_sem_horario = [r for r in resumo_freq if r["fonte"] != "planilha"]
+                itens_casados.sort(key=lambda r: str(r["disciplina"]))
+                itens_sem_horario.sort(key=lambda r: str(r["disciplina"]))
+
+                for res_d in itens_casados + itens_sem_horario:
+                    ch_b = res_d["ch_bim"]
+                    lim_f = res_d["limite_faltas_bim"]
+                    n_abaixo = res_d["n_abaixo_75"]
+                    pct_nom = res_d["%_nominal"]
+                    ch_ano = res_d["ch_efetiva_ano"]
+
+                    ch_str = f"{ch_b} h/a" if ch_b is not None else "—"
+                    ch_ano_str = f"{ch_ano} h/a" if ch_ano is not None else "—"
+                    pct_str = f"{pct_nom:.1%}" if pct_nom is not None else "—"
+                    lim_str = str(lim_f) if lim_f is not None else "—"
+
+                    if n_abaixo is not None:
+                        if n_abaixo > 0:
+                            abaixo_p = Paragraph(f"<b><font color='#c00000'>{n_abaixo}</font></b>", style_cel_centro)
+                        else:
+                            abaixo_p = Paragraph("0", style_cel_centro)
+                    else:
+                        abaixo_p = Paragraph("—", style_cel_centro)
+
+                    aulas_str = str(res_d["aulas_sem"]) if res_d["aulas_sem"] is not None else "—"
+                    fonte_str = "Planilha" if res_d["fonte"] == "planilha" else "Sem horário na planilha"
+
+                    linhas_tab_ch.append([
+                        Paragraph(str(res_d["disciplina"]), style_cel),
+                        Paragraph(aulas_str, style_cel_centro),
+                        Paragraph(ch_str, style_cel_centro),
+                        Paragraph(ch_ano_str, style_cel_centro),
+                        Paragraph(pct_str, style_cel_centro),
+                        Paragraph(lim_str, style_cel_centro),
+                        abaixo_p,
+                        Paragraph(fonte_str, style_cel_centro),
+                    ])
+
+                tab_ch = Table(
+                    linhas_tab_ch,
+                    colWidths=[4.6 * cm, 1.6 * cm, 1.7 * cm, 1.9 * cm, 1.7 * cm, 2.1 * cm, 1.7 * cm, 2.2 * cm],
+                )
+                tab_ch.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                ]))
+                story.append(tab_ch)
+
+                if sem_linha:
+                    nomes_sem = ", ".join(sorted(sem_linha))
+                    story.append(Spacer(1, 0.15 * cm))
+                    story.append(
+                        Paragraph(
+                            f"<b>Sem horário na planilha:</b> {nomes_sem} "
+                            f"(aulas lecionadas em laboratórios, oficinas ou instalações fora das salas 305–437).",
+                            style_caption,
+                        )
+                    )
+
+                story.append(Spacer(1, 0.15 * cm))
+                story.append(Paragraph(f"<b>Sábados letivos:</b> {nota_sab}", style_caption))
+
     return story
 
 
@@ -648,6 +1407,11 @@ def gerar_prototipo_pdf(
     curso: str = "TÉCNICO EM TRÂNSITO",
     bimestres: Sequence[int] | str = (1, 2, 3),
     caminho_saida: str | Path | None = None,
+    cenario: str = "A",
+    calendario: Calendario | Path | str | None = None,
+    sabado_reproduz: str | None = None,
+    caminhos_mapas: Sequence[str | Path] | str | Path | None = None,
+    caminho_ch: str | Path | None = None,
 ) -> Path:
     """Gera o protótipo de destaque em PDF com os dados da DAE (ou sintéticos)."""
     # 1. Obtenção dos dados
@@ -656,12 +1420,15 @@ def gerar_prototipo_pdf(
         df = obter_dados_sinteticos()
     else:
         df = carregar_dae(caminho_dae)
+        df.attrs["sintetico"] = False
 
     # 2. Filtragem pelo curso se a coluna existir e houver dados correspondentes
     if curso and "curso" in df.columns:
         mask_curso = df["curso"].str.upper() == curso.upper()
         if mask_curso.any():
+            attrs_salvas = df.attrs.copy()
             df = df[mask_curso].reset_index(drop=True)
+            df.attrs.update(attrs_salvas)
 
     # 3. Normalização dos bimestres
     if isinstance(bimestres, str):
@@ -677,10 +1444,27 @@ def gerar_prototipo_pdf(
         caminho_saida=caminho_saida,
     )
 
-    # 5. Montagem dos flowables
-    story = montar_flowables(df, bimestres=lista_bimestres, curso=curso)
+    # 5. Normalização dos mapas para cruzamento (C14)
+    lista_mapas: list[str | Path] | None = None
+    if caminhos_mapas:
+        if isinstance(caminhos_mapas, (str, Path)):
+            lista_mapas = [caminhos_mapas]
+        else:
+            lista_mapas = list(caminhos_mapas)
 
-    # 6. Geração do PDF com SimpleDocTemplate e rodapé em todas as páginas (D10-i)
+    # 6. Montagem dos flowables
+    story = montar_flowables(
+        df,
+        bimestres=lista_bimestres,
+        curso=curso,
+        cenario=cenario,
+        calendario=calendario,
+        sabado_reproduz=sabado_reproduz,
+        cruzamento=lista_mapas,
+        ch_efetiva=caminho_ch,
+    )
+
+    # 7. Geração do PDF com SimpleDocTemplate e rodapé em todas as páginas (D10-i)
     doc = SimpleDocTemplate(
         str(caminho_pdf),
         pagesize=A4,
@@ -707,6 +1491,20 @@ def _criar_parser() -> argparse.ArgumentParser:
         help="Caminho para o arquivo da DAE (.xlsx ou .csv). Padrão: dados sintéticos.",
     )
     parser.add_argument(
+        "--mapas",
+        dest="mapas",
+        nargs="*",
+        default=None,
+        help="Caminhos para arquivos de Mapa de Turma (.xls).",
+    )
+    parser.add_argument(
+        "--ch-efetiva",
+        dest="ch_efetiva",
+        type=str,
+        default=None,
+        help="Caminho para o arquivo da planilha de CH efetiva (.xlsx). Padrão: arquivo oficial em dados/.",
+    )
+    parser.add_argument(
         "--curso",
         dest="curso",
         type=str,
@@ -719,6 +1517,27 @@ def _criar_parser() -> argparse.ArgumentParser:
         type=str,
         default="1,2,3",
         help="Bimestres a analisar separados por vírgula (padrão: '1,2,3').",
+    )
+    parser.add_argument(
+        "--cenario",
+        dest="cenario",
+        choices=["A", "REAL"],
+        default="A",
+        help="Cenário de apuração do calendário ('A' ou 'REAL', padrão: 'A').",
+    )
+    parser.add_argument(
+        "--calendario",
+        dest="calendario",
+        type=str,
+        default=None,
+        help="Caminho para o arquivo Markdown do Calendário Escolar (padrão: oficial 2026).",
+    )
+    parser.add_argument(
+        "--sabado-reproduz",
+        dest="sabado_reproduz",
+        choices=["SEG", "TER", "QUA", "QUI", "SEX"],
+        default=None,
+        help="Dia útil que o sábado letivo reproduz no cenário REAL (choices: SEG..SEX).",
     )
     parser.add_argument(
         "--saida",
@@ -749,6 +1568,11 @@ def _executar_cli(argv: list[str] | None = None) -> int:
         curso=args.curso,
         bimestres=lista_bimestres,
         caminho_saida=args.saida,
+        cenario=args.cenario,
+        calendario=args.calendario,
+        sabado_reproduz=args.sabado_reproduz,
+        caminhos_mapas=args.mapas,
+        caminho_ch=args.ch_efetiva,
     )
     print(f"Protótipo PDF gerado com sucesso em: {pdf_gerado}")
     return 0

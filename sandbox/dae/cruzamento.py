@@ -38,13 +38,27 @@ for _p in (_DIR_DAE, _DIR_RAIZ):
         sys.path.insert(0, str(_p))
 
 try:
-    from .carregar import _normalizar_matricula, carregar_dae
+    from .carregar import (
+        _normalizar_matricula,
+        _normalizar_pe_de_meia,
+        _normalizar_rotulo,
+        carregar_dae,
+    )
+    from .ch_efetiva import PADRAO_CH_EFETIVA
     from .frequencia import MESES_POR_BIMESTRE, mes_referencia, meses_lancados
 except ImportError:
-    from carregar import _normalizar_matricula, carregar_dae
+    from carregar import (
+        _normalizar_matricula,
+        _normalizar_pe_de_meia,
+        _normalizar_rotulo,
+        carregar_dae,
+    )
+    from ch_efetiva import PADRAO_CH_EFETIVA
     from frequencia import MESES_POR_BIMESTRE, mes_referencia, meses_lancados
 
 from core.manipulacao import processar_multiplos_bimestres
+
+PASTA_DADOS: Path = _DIR_DAE / "dados"
 
 
 def _extrair_colunas_disciplinas(df: pd.DataFrame) -> list[str]:
@@ -330,11 +344,116 @@ def cruzar(
     return df_unido, resumo
 
 
+def _eh_matricula_valida(val: object) -> bool:
+    r"""Verifica se a matrícula possui exatamente 11 dígitos após _normalizar_matricula (C10)."""
+    norm = _normalizar_matricula(val)
+    return bool(re.fullmatch(r"\d{11}", norm))
+
+
+def resumo_mapa(conjuntos: list) -> list[dict]:
+    """Extrai métricas e validações de cada conjunto do mapa de turma (C10).
+
+    Um dict por conjunto (na ordem de ``conjuntos``), com as chaves:
+    ``curso_amigavel``, ``turma``, ``bimestre_num``, ``periodo_letivo``,
+    ``n_alunos``, ``n_matriculas_validas`` (11 dígitos após
+    ``_normalizar_matricula``), ``n_matriculas_duplicadas``, ``n_disciplinas``,
+    ``faltas_total`` e ``faltas_mediana_aluno``.
+
+    Args:
+        conjuntos: Lista retornada por core.manipulacao.processar_multiplos_bimestres.
+
+    Returns:
+        Lista de dicts, um por conjunto. Só agregados (LGPD).
+    """
+    resumo: list[dict] = []
+    for i, (df_notas, df_faltas, legenda, meta) in enumerate(conjuntos):
+        legenda = legenda if isinstance(legenda, dict) else {}
+        meta = meta if isinstance(meta, dict) else {}
+
+        matriculas = (
+            df_faltas["matricula"]
+            if "matricula" in df_faltas.columns
+            else pd.Series(dtype=object)
+        )
+        norm = matriculas.apply(_normalizar_matricula)
+
+        cols_disc = _extrair_colunas_disciplinas(df_faltas)
+        if legenda:
+            filtradas = [c for c in cols_disc if c in legenda]
+            cols_disc = filtradas or cols_disc
+
+        faltas_num = df_faltas[cols_disc].apply(pd.to_numeric, errors="coerce") if cols_disc else pd.DataFrame(index=df_faltas.index)
+        faltas_por_aluno = faltas_num.fillna(0).sum(axis=1)
+
+        resumo.append(
+            {
+                "curso_amigavel": str(meta.get("curso_amigavel") or meta.get("curso") or ""),
+                "turma": str(meta.get("turma") or ""),
+                "bimestre_num": int(meta.get("bimestre_num", i + 1)),
+                "periodo_letivo": str(meta.get("periodo_letivo", "")),
+                "n_alunos": len(df_faltas),
+                "n_matriculas_validas": int(norm.apply(_eh_matricula_valida).sum()),
+                "n_matriculas_duplicadas": int(norm.duplicated().sum()),
+                "n_disciplinas": len(cols_disc),
+                "faltas_total": int(round(faltas_por_aluno.sum())),
+                "faltas_mediana_aluno": float(faltas_por_aluno.median()) if len(faltas_por_aluno) else 0.0,
+            }
+        )
+    return resumo
+
+
+def contagem_pe_de_meia(
+    df_dae: pd.DataFrame,
+    curso_contem: str | None = None,
+    matriculas: Sequence[str] | set[str] | pd.Series | None = None,
+) -> dict[str, int]:
+    """Contabiliza os discentes por situação do programa Pé-de-Meia (C11).
+
+    Mantém as 4 chaves de ``carregar_dae`` (``elegivel``, ``nao_elegivel``,
+    ``nada_consta``, ``indefinida``) mais ``total``, zeros incluídos.
+    ``curso_contem`` casa sem acento e sem caixa; ``matriculas`` restringe o
+    universo de discentes.
+
+    Args:
+        df_dae: DataFrame com dados da DAE contendo a coluna 'pe_de_meia'.
+        curso_contem: Substring para filtrar a coluna 'curso' (ex.: 'estradas').
+        matriculas: Matrículas que delimitam o universo (ex.: alunos do mapa).
+
+    Returns:
+        Dicionário com as cinco contagens.
+    """
+    df_filtrado = df_dae
+    if curso_contem is not None and "curso" in df_filtrado.columns:
+        alvo = _normalizar_rotulo(curso_contem)
+        mask_curso = df_filtrado["curso"].apply(lambda c: alvo in _normalizar_rotulo(c))
+        df_filtrado = df_filtrado[mask_curso]
+
+    if matriculas is not None and "matricula" in df_filtrado.columns:
+        mats_set = {_normalizar_matricula(m) for m in matriculas if _normalizar_matricula(m)}
+        mask_mats = df_filtrado["matricula"].apply(_normalizar_matricula).isin(mats_set)
+        df_filtrado = df_filtrado[mask_mats]
+
+    if "pe_de_meia" in df_filtrado.columns:
+        pdm_norm = df_filtrado["pe_de_meia"].apply(_normalizar_pe_de_meia)
+        contagens = {
+            "elegivel": int((pdm_norm == "elegivel").sum()),
+            "nao_elegivel": int((pdm_norm == "nao_elegivel").sum()),
+            "nada_consta": int((pdm_norm == "nada_consta").sum()),
+            "indefinida": int((pdm_norm == "indefinida").sum()),
+        }
+    else:
+        contagens = {"elegivel": 0, "nao_elegivel": 0, "nada_consta": 0, "indefinida": 0}
+
+    contagens["total"] = sum(contagens.values())
+    return contagens
+
+
 def _executar_cli(argv: list[str] | None = None) -> int:
     """Executa a interface de linha de comando para cruzamento DAE x Mapas de Turma.
 
-    Imprime o mês de referência, os meses usados por bimestre e APENAS agregados
-    (contagens, mediana e percentil 90 de |diff_faltas| por bimestre).
+    Imprime resumo do mapa e, caso a planilha da DAE esteja disponível, exibe
+    estatísticas agregadas e recortes de Pé-de-Meia (C10, C11).
+    Caso apenas mapas estejam presentes, opera em modo só-mapa (PENDENTE: ..., retorno 0).
     Nunca imprime nomes ou matrículas (LGPD).
     """
     parser = argparse.ArgumentParser(
@@ -373,34 +492,64 @@ def _executar_cli(argv: list[str] | None = None) -> int:
         p = Path(arq)
         ext = p.suffix.lower()
         if ext in (".xlsx", ".csv"):
-            if caminho_dae is None:
+            if caminho_dae is None and not PADRAO_CH_EFETIVA.match(p.name):
                 caminho_dae = str(p)
         elif ext == ".xls":
             if str(p) not in caminhos_mapas:
                 caminhos_mapas.append(str(p))
 
-    if not caminho_dae:
-        print("Erro: Arquivo da DAE (.xlsx ou .csv) não fornecido.", file=sys.stderr)
-        return 1
+    # Descoberta automática em PASTA_DADOS quando nenhum arquivo for fornecido
+    if not caminho_dae and not caminhos_mapas and not args.arquivos:
+        if PASTA_DADOS.exists() and PASTA_DADOS.is_dir():
+            candidatos_dae: list[Path] = []
+            for p in sorted(PASTA_DADOS.iterdir()):
+                if not p.is_file():
+                    continue
+                ext = p.suffix.lower()
+                if ext == ".xls":
+                    caminhos_mapas.append(str(p))
+                elif ext in (".xlsx", ".csv") and not PADRAO_CH_EFETIVA.match(p.name):
+                    candidatos_dae.append(p)
+            if len(candidatos_dae) > 1:
+                # Mais de um candidato a DAE: o de mtime mais recente, dizendo só o nome
+                escolhido = max(candidatos_dae, key=lambda p: p.stat().st_mtime)
+                print(f"DAE: vários arquivos candidatos em dados/ — usando {escolhido.name} (mais recente).")
+                caminho_dae = str(escolhido)
+            elif candidatos_dae:
+                caminho_dae = str(candidatos_dae[0])
 
     if not caminhos_mapas:
-        print("Erro: Nenhum mapa de turma (.xls) fornecido.", file=sys.stderr)
+        print("Erro: Nenhum mapa de turma (.xls) fornecido ou encontrado em dados/.", file=sys.stderr)
         return 1
 
-    # 1. Carrega dados da DAE
+    # Modo só-mapa: mapas presentes, mas planilha da DAE ausente
+    if not caminho_dae:
+        conjuntos = processar_multiplos_bimestres(caminhos_mapas)
+        resumo = resumo_mapa(conjuntos)
+        r0 = resumo[0]
+        print(f"Mapa de turma: {r0['n_alunos']} alunos / bimestre {r0['bimestre_num']} / {r0['n_disciplinas']} disciplinas")
+        print(f"Total de faltas registradas: {r0['faltas_total']}")
+        if r0["n_matriculas_duplicadas"] > 0:
+            print(f"Matrículas duplicadas detectadas: {r0['n_matriculas_duplicadas']}")
+        validas = r0["n_matriculas_validas"]
+        invalidas = r0["n_alunos"] - validas
+        if invalidas > 0:
+            print(f"Matrículas fora do padrão (inválidas): {invalidas}")
+        print("PENDENTE: arquivo da DAE (.xlsx/.csv) ausente em sandbox/dae/dados/ — cruzamento não executado.")
+        return 0
+
+    # Cruzamento completo com DAE
     df_dae = carregar_dae(caminho_dae)
-
-    # 2. Processa múltiplos bimestres via core.manipulacao (só import)
     conjuntos = processar_multiplos_bimestres(caminhos_mapas)
-
-    # 3. Executa o cruzamento
+    resumo_mapa_lista = resumo_mapa(conjuntos)
+    r0 = resumo_mapa_lista[0]
     df_unido, resumo = cruzar(df_dae, conjuntos)
 
-    # 4. Imprime mês de referência
+    print(f"Mapa de turma: {r0['n_alunos']} alunos / bimestre {r0['bimestre_num']} / {r0['n_disciplinas']} disciplinas")
+
     ref = mes_referencia(df_dae)
     print(f"Mês de referência DAE: {ref or 'Não identificado'}")
 
-    # 5. Imprime meses usados por bimestre
     bimestres_presentes = [
         meta.get("bimestre_num") for _, _, _, meta in conjuntos if "bimestre_num" in meta
     ]
@@ -413,7 +562,6 @@ def _executar_cli(argv: list[str] | None = None) -> int:
         meses_usados = [m for m in meses_previstos if m in todos_lancados]
         print(f"Bimestre {b}: meses previstos = {meses_previstos} | meses usados = {meses_usados}")
 
-    # 6. Imprime APENAS agregados (LGPD)
     print("\nResumo de Cobertura:")
     print(f"  - Só no App: {resumo['so_app']}")
     print(f"  - Só na DAE: {resumo['so_dae']}")
@@ -434,6 +582,40 @@ def _executar_cli(argv: list[str] | None = None) -> int:
                 print(f"    - Percentil 90 (|diff_faltas|): {p90:.2f}")
             else:
                 print(f"  Bimestre {b}: sem dados de estudantes casados para comparação.")
+
+    # Recortes de Pé-de-Meia (C11)
+    curso_alvo = None
+    for _, _, _, meta in conjuntos:
+        if isinstance(meta, dict):
+            curso_alvo = meta.get("curso_amigavel") or meta.get("curso")
+            if curso_alvo:
+                break
+
+    contagem_curso = contagem_pe_de_meia(df_dae, curso_contem=curso_alvo)
+
+    mats_mapa = set()
+    for _, df_f, _, _ in conjuntos:
+        if "matricula" in df_f.columns:
+            mats_mapa.update(df_f["matricula"].apply(_normalizar_matricula).dropna().unique())
+
+    contagem_mapa = contagem_pe_de_meia(df_dae, matriculas=mats_mapa)
+
+    rotulo_curso = f" no Curso ({curso_alvo})" if curso_alvo else ""
+    print(f"\nRecorte Pé-de-Meia (DAE{rotulo_curso}):")
+    print(f"  - Elegível: {contagem_curso['elegivel']}")
+    print(f"  - Não elegível: {contagem_curso['nao_elegivel']}")
+    print(f"  - N/C (Nada consta): {contagem_curso['nada_consta']}")
+    if contagem_curso["indefinida"] > 0:
+        print(f"  - Elegibilidade indefinida: {contagem_curso['indefinida']}")
+    print(f"  - Total: {contagem_curso['total']}")
+
+    print("\nRecorte Pé-de-Meia (Estudantes do Mapa):")
+    print(f"  - Elegível: {contagem_mapa['elegivel']}")
+    print(f"  - Não elegível: {contagem_mapa['nao_elegivel']}")
+    print(f"  - N/C (Nada consta): {contagem_mapa['nada_consta']}")
+    if contagem_mapa["indefinida"] > 0:
+        print(f"  - Elegibilidade indefinida: {contagem_mapa['indefinida']}")
+    print(f"  - Total: {contagem_mapa['total']}")
 
     return 0
 

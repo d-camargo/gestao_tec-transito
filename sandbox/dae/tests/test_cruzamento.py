@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from carregar import carregar_dae
-from cruzamento import _executar_cli, cruzar
+from cruzamento import _eh_matricula_valida, _executar_cli, contagem_pe_de_meia, cruzar, resumo_mapa
 
 
 def test_cruzamento_casa_e_sobra_de_cada_lado() -> None:
@@ -260,3 +260,163 @@ def test_cli_apenas_agregados_sem_vazar_nomes_ou_matriculas(
     assert "20261010002" not in saida
     assert "20261010003" not in saida
     assert "20261010004" not in saida
+
+
+def test_resumo_mapa_metricas_e_validacoes() -> None:
+    """Verifica que resumo_mapa conta alunos, duplicadas, matrícula de 10 dígitos como inválida, disciplinas e faltas."""
+    df_notas = pd.DataFrame([{"matricula": "20261010001", "MAT": 10.0}])
+    df_faltas = pd.DataFrame(
+        [
+            {"matricula": "20261010001", "MAT": 10, "POR": 5},  # válida (15 faltas)
+            {"matricula": "2026101000", "MAT": 2, "POR": 3},    # 10 dígitos (inválida, 5 faltas)
+            {"matricula": "2026101000", "MAT": 4, "POR": 1},    # duplicada (5 faltas)
+            {"matricula": "20261010002", "MAT": 6, "POR": 9},   # válida (15 faltas)
+        ]
+    )
+    meta = {"bimestre_num": 1, "curso": "Técnico em Estradas"}
+    conjuntos_mock = [(df_notas, df_faltas, {"MAT": "Matemática", "POR": "Português"}, meta)]
+
+    res = resumo_mapa(conjuntos_mock)
+    r0 = res[0]
+
+    assert r0["n_alunos"] == 4
+    assert r0["n_matriculas_duplicadas"] == 1
+    assert r0["n_matriculas_validas"] == 2
+    assert r0["n_disciplinas"] == 2
+    assert r0["faltas_total"] == 40
+    assert r0["bimestre_num"] == 1
+    assert r0["curso_amigavel"] == "Técnico em Estradas"
+    # Medianas das somas por aluno [15, 5, 5, 15] = 10.0
+    assert r0["faltas_mediana_aluno"] == 10.0
+
+
+def test_contagem_pe_de_meia_filtros_e_zeros() -> None:
+    """Verifica contagem_pe_de_meia com curso_contem='estradas', restrição por matriculas e presença de zeros."""
+    df_dae = pd.DataFrame(
+        [
+            {"matricula": "20261010001", "curso": "TÉCNICO EM ESTRADAS", "pe_de_meia": "elegivel"},
+            {"matricula": "20261010002", "curso": "Tecnico em Estradas", "pe_de_meia": "nada_consta"},
+            {"matricula": "20261010003", "curso": "TÉCNICO EM TRÂNSITO", "pe_de_meia": "elegivel"},
+            {"matricula": "20261010004", "curso": "Tecnico em Estradas", "pe_de_meia": "elegivel"},
+        ]
+    )
+
+    # 1. curso_contem="estradas" casa "TÉCNICO EM ESTRADAS" e "Tecnico em Estradas"
+    contagem_estradas = contagem_pe_de_meia(df_dae, curso_contem="estradas")
+    assert contagem_estradas["elegivel"] == 2
+    assert contagem_estradas["nada_consta"] == 1
+    assert contagem_estradas["nao_elegivel"] == 0
+    assert contagem_estradas["indefinida"] == 0
+    assert contagem_estradas["total"] == 3
+    # Zeros e chaves presentes
+    assert "nao_elegivel" in contagem_estradas
+    assert "indefinida" in contagem_estradas
+    assert "nada_consta" in contagem_estradas
+
+    # Matrícula de 11 dígitos sem prefixo "20" continua válida
+    assert _eh_matricula_valida("12345678901")
+
+    # 2. matriculas restringe
+    contagem_restrita = contagem_pe_de_meia(
+        df_dae,
+        curso_contem="estradas",
+        matriculas=["20261010001", "20261010003"],
+    )
+    assert contagem_restrita["elegivel"] == 1
+    assert contagem_restrita["nada_consta"] == 0
+    assert contagem_restrita["nao_elegivel"] == 0
+    assert contagem_restrita["indefinida"] == 0
+    assert contagem_restrita["total"] == 1
+
+
+def test_cli_so_com_mapas_retorno_zero_e_pendente(capsys: pytest.CaptureFixture) -> None:
+    """Verifica que CLI chamado apenas com --mapas retorna 0, exibe PENDENTE: e preserva LGPD."""
+    df_notas = pd.DataFrame([{"matricula": "20261010001", "MAT": 15.0}])
+    df_faltas = pd.DataFrame(
+        [
+            {"matricula": "20261010001", "nome": "Ana Silva", "MAT": 10},
+            {"matricula": "20261010002", "nome": "Bruno Souza", "MAT": 20},
+        ]
+    )
+    meta = {"bimestre_num": 1, "curso": "Técnico em Estradas"}
+    conjuntos_mock = [(df_notas, df_faltas, {"MAT": "Matemática"}, meta)]
+
+    with patch("cruzamento.processar_multiplos_bimestres", return_value=conjuntos_mock):
+        codigo = _executar_cli(["--mapas", "fake_mapa.xls"])
+
+    assert codigo == 0
+    saida = capsys.readouterr().out
+    assert "PENDENTE:" in saida
+    assert "20261010001" not in saida
+    assert "20261010002" not in saida
+    assert "Ana Silva" not in saida
+    assert "Bruno Souza" not in saida
+
+
+def test_cli_sem_nada_com_pasta_dados_vazia_retorno_um(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verifica que o CLI sem argumentos retorna 1 quando PASTA_DADOS está vazia."""
+    monkeypatch.setattr("cruzamento.PASTA_DADOS", tmp_path)
+    codigo = _executar_cli([])
+    assert codigo == 1
+
+
+def test_cli_descoberta_com_mapa_e_apenas_planilha_ch_modo_so_mapa(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """Verifica que tmp_path com .xls + CH_Efetiva... entra em modo só-mapa com PENDENTE: (CH não é tomada por DAE)."""
+    (tmp_path / "Estradas_ficticio.xls").touch()
+    (tmp_path / "CH_Efetiva_Disciplinas_Integrado_2026.xlsx").touch()
+    monkeypatch.setattr("cruzamento.PASTA_DADOS", tmp_path)
+
+    df_notas = pd.DataFrame([{"matricula": "20261010001", "MAT": 15.0}])
+    df_faltas = pd.DataFrame([{"matricula": "20261010001", "nome": "Ana Silva", "MAT": 5}])
+    meta = {"bimestre_num": 1, "curso": "Técnico em Estradas"}
+    conjuntos_mock = [(df_notas, df_faltas, {"MAT": "Matemática"}, meta)]
+
+    with patch("cruzamento.processar_multiplos_bimestres", return_value=conjuntos_mock):
+        codigo = _executar_cli([])
+
+    assert codigo == 0
+    saida = capsys.readouterr().out
+    assert "PENDENTE:" in saida
+    assert "20261010001" not in saida
+    assert "Ana Silva" not in saida
+
+
+def test_cli_descoberta_com_mapa_dae_e_planilha_ch_cruzamento_completo(
+    tmp_path: Path,
+    caminho_xlsx: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """Verifica descoberta com .xls fictício + DAE sintético + planilha CH: cruzamento completo com N/C (Nada consta)."""
+    import shutil
+
+    (tmp_path / "Estradas_ficticio.xls").touch()
+    (tmp_path / "CH_Efetiva_Disciplinas_Integrado_2026.xlsx").touch()
+    shutil.copy(caminho_xlsx, tmp_path / "dae_sintetico_2026.xlsx")
+    monkeypatch.setattr("cruzamento.PASTA_DADOS", tmp_path)
+
+    df_notas = pd.DataFrame([{"matricula": "20261010001", "MAT": 18.0}])
+    df_faltas = pd.DataFrame(
+        [
+            {"matricula": "20261010001", "nome": "Ana Silva", "MAT": 62},
+            {"matricula": "20261010002", "nome": "Bruno Souza", "MAT": 95},
+        ]
+    )
+    meta = {"bimestre_num": 1, "curso": "Técnico em Estradas"}
+    conjuntos_mock = [(df_notas, df_faltas, {"MAT": "Matemática"}, meta)]
+
+    with patch("cruzamento.processar_multiplos_bimestres", return_value=conjuntos_mock):
+        codigo = _executar_cli([])
+
+    assert codigo == 0
+    saida = capsys.readouterr().out
+    assert "Resumo de Cobertura:" in saida
+    assert "N/C (Nada consta)" in saida
+    assert "PENDENTE:" not in saida
+    assert "20261010001" not in saida
+    assert "Ana Silva" not in saida
+

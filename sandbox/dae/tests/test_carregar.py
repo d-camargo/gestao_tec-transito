@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from carregar import carregar_dae
+from frequencia import tabela_frequencia
 
 
 def test_xlsx_e_csv_dao_mesmo_dataframe(caminho_xlsx: Path, caminho_csv: Path) -> None:
@@ -277,3 +278,129 @@ def test_matricula_apenas_digitos(tmp_path: Path) -> None:
 
     df = carregar_dae(caminho)
     assert list(df["matricula"]) == ["2026101001", "2026101002"]
+
+
+def _gerar_planilha_dae_acumulado(
+    tmp_path: Path,
+    dados_sinteticos_dae: dict[str, list],
+    valores_acumulado: list[object],
+    extensao: str = "csv",
+    nome_arquivo: str = "dae_acumulado",
+) -> Path:
+    """Gera arquivo sintético (.csv ou .xlsx) no layout da aba '2026 - geral' substituindo a coluna Acumulado."""
+    caminho = tmp_path / f"{nome_arquivo}.{extensao}"
+    rows = []
+    for i, val in enumerate(valores_acumulado):
+        idx_aluno = i % len(dados_sinteticos_dae["rows_alunos"])
+        modelo = list(dados_sinteticos_dae["rows_alunos"][idx_aluno])
+        modelo[1] = f"202610100{i+1:02d}"
+        modelo[2] = val
+        rows.append(modelo)
+
+    if extensao == "csv":
+        with open(caminho, mode="w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(dados_sinteticos_dae["row0"])
+            writer.writerow(dados_sinteticos_dae["row1"])
+            for r in rows:
+                writer.writerow([c if c is not None else "" for c in r])
+    elif extensao == "xlsx":
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "2026 - geral"
+        ws.append(dados_sinteticos_dae["row0"])
+        ws.append(dados_sinteticos_dae["row1"])
+        for r in rows:
+            ws.append(r)
+        wb.save(caminho)
+    else:
+        raise ValueError(f"Extensão não suportada: {extensao}")
+
+    return caminho
+
+
+def test_escala_acumulado_fracao(tmp_path: Path, dados_sinteticos_dae: dict[str, list]) -> None:
+    """Verifica que coluna com '0,85' e '0,9' mantém os valores em fração e registra escala 'fracao' (C12)."""
+    caminho_csv = _gerar_planilha_dae_acumulado(
+        tmp_path, dados_sinteticos_dae, ["0,85", "0,9"], extensao="csv", nome_arquivo="fracao_csv"
+    )
+    df_csv = carregar_dae(caminho_csv)
+    assert df_csv["acumulado_dae"].iloc[0] == pytest.approx(0.85)
+    assert df_csv["acumulado_dae"].iloc[1] == pytest.approx(0.90)
+    assert df_csv.attrs["escala_acumulado"] == "fracao"
+
+    caminho_xlsx = _gerar_planilha_dae_acumulado(
+        tmp_path, dados_sinteticos_dae, [0.85, 0.9], extensao="xlsx", nome_arquivo="fracao_xlsx"
+    )
+    df_xlsx = carregar_dae(caminho_xlsx)
+    assert df_xlsx["acumulado_dae"].iloc[0] == pytest.approx(0.85)
+    assert df_xlsx["acumulado_dae"].iloc[1] == pytest.approx(0.90)
+    assert df_xlsx.attrs["escala_acumulado"] == "fracao"
+
+
+def test_escala_acumulado_percentual(tmp_path: Path, dados_sinteticos_dae: dict[str, list]) -> None:
+    """Verifica que coluna com '85' e '95,5' normaliza para 0.85 e 0.955 e registra 'percentual' (C12)."""
+    caminho_csv = _gerar_planilha_dae_acumulado(
+        tmp_path, dados_sinteticos_dae, ["85", "95,5"], extensao="csv", nome_arquivo="perc_csv"
+    )
+    df_csv = carregar_dae(caminho_csv)
+    assert df_csv["acumulado_dae"].iloc[0] == pytest.approx(0.85)
+    assert df_csv["acumulado_dae"].iloc[1] == pytest.approx(0.955)
+    assert df_csv.attrs["escala_acumulado"] == "percentual"
+
+    caminho_xlsx = _gerar_planilha_dae_acumulado(
+        tmp_path, dados_sinteticos_dae, [85, 95.5], extensao="xlsx", nome_arquivo="perc_xlsx"
+    )
+    df_xlsx = carregar_dae(caminho_xlsx)
+    assert df_xlsx["acumulado_dae"].iloc[0] == pytest.approx(0.85)
+    assert df_xlsx["acumulado_dae"].iloc[1] == pytest.approx(0.955)
+    assert df_xlsx.attrs["escala_acumulado"] == "percentual"
+
+
+def test_escala_acumulado_com_simbolo_porcentagem(tmp_path: Path, dados_sinteticos_dae: dict[str, list]) -> None:
+    """Verifica que '85%' e '90%' convertem para 0.85 e 0.90 e registram 'fracao' (C12)."""
+    caminho = _gerar_planilha_dae_acumulado(
+        tmp_path, dados_sinteticos_dae, ["85%", "90%"], extensao="csv", nome_arquivo="porcentagem"
+    )
+    df = carregar_dae(caminho)
+    assert df["acumulado_dae"].iloc[0] == pytest.approx(0.85)
+    assert df["acumulado_dae"].iloc[1] == pytest.approx(0.90)
+    assert df.attrs["escala_acumulado"] == "fracao"
+
+
+def test_escala_acumulado_mista(tmp_path: Path, dados_sinteticos_dae: dict[str, list]) -> None:
+    """Verifica que entrada mista '85%' e 95,5 normaliza para 0.85 e 0.955 (C12)."""
+    caminho = _gerar_planilha_dae_acumulado(
+        tmp_path, dados_sinteticos_dae, ["85%", "95,5"], extensao="csv", nome_arquivo="mista"
+    )
+    df = carregar_dae(caminho)
+    assert df["acumulado_dae"].iloc[0] == pytest.approx(0.85)
+    assert df["acumulado_dae"].iloc[1] == pytest.approx(0.955)
+    assert df.attrs["escala_acumulado"] == "percentual"
+
+
+def test_escala_acumulado_toda_vazia(tmp_path: Path, dados_sinteticos_dae: dict[str, list]) -> None:
+    """Verifica que coluna toda vazia resulta em NaN e registra 'vazio' (C12)."""
+    caminho = _gerar_planilha_dae_acumulado(
+        tmp_path, dados_sinteticos_dae, ["", None, "  ", "-"], extensao="csv", nome_arquivo="vazio"
+    )
+    df = carregar_dae(caminho)
+    assert df["acumulado_dae"].isna().all()
+    assert df.attrs["escala_acumulado"] == "vazio"
+
+
+def test_tabela_frequencia_com_percentual_cru_diff_modulo_menor_100(
+    tmp_path: Path, dados_sinteticos_dae: dict[str, list]
+) -> None:
+    """Verifica que tabela_frequencia sobre coluna em percentual cru dá diff_vs_dae_pp com |módulo| < 100 (C12)."""
+    caminho = _gerar_planilha_dae_acumulado(
+        tmp_path, dados_sinteticos_dae, [85, 70, 95.5, 60], extensao="xlsx", nome_arquivo="tabela_freq"
+    )
+    df = carregar_dae(caminho)
+    assert df.attrs["escala_acumulado"] == "percentual"
+
+    df_freq = tabela_frequencia(df, bimestres=[1])
+    assert "diff_vs_dae_pp" in df_freq.columns
+    assert df_freq["diff_vs_dae_pp"].notna().all()
+    assert (df_freq["diff_vs_dae_pp"].abs() < 100.0).all()
+
