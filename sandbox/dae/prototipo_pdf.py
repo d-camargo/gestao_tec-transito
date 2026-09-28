@@ -68,9 +68,20 @@ try:
         divergencias_calendario,
         normalizar_disciplina,
         nota_sabados,
+        remover_acentos,
         resumo_por_carga,
     )
     from .cruzamento import contagem_pe_de_meia, cruzar, resumo_mapa
+    from .det import (
+        CURSOS_DET,
+        ROTULO_DET,
+        carregar_det,
+        classificar_mapas,
+        conjuntos_det,
+        eh_det,
+        resumo_det,
+        resumo_frequencia_det,
+    )
     from .frequencia import (
         MESES_POR_BIMESTRE,
         limite_faltas,
@@ -97,9 +108,20 @@ except ImportError:
         divergencias_calendario,
         normalizar_disciplina,
         nota_sabados,
+        remover_acentos,
         resumo_por_carga,
     )
     from cruzamento import contagem_pe_de_meia, cruzar, resumo_mapa
+    from det import (
+        CURSOS_DET,
+        ROTULO_DET,
+        carregar_det,
+        classificar_mapas,
+        conjuntos_det,
+        eh_det,
+        resumo_det,
+        resumo_frequencia_det,
+    )
     from frequencia import (
         MESES_POR_BIMESTRE,
         limite_faltas,
@@ -152,6 +174,24 @@ _MAPA_MES_NUMERO = {
     "novembro": "11",
     "dezembro": "12",
 }
+
+# D8: Quadro de demonstração quando os dados da DAE são sintéticos na prévia
+TEXTO_DEMONSTRACAO = (
+    "DEMONSTRAÇÃO — os dados individuais da Assistência Estudantil desta seção são "
+    "FICTÍCIOS (export da DAE ainda não recebido). Os agregados do mapa de turma, do "
+    "calendário e da CH efetiva são reais."
+)
+
+
+def _largura(cm_prototipo: float | Sequence[float], layout: str = "app") -> Any:
+    """Escala largura(s) de colunas do protótipo para 16 cm úteis quando layout='app' (D6)."""
+    fator = (16.0 / 17.5) if layout == "app" else 1.0
+    if isinstance(cm_prototipo, (list, tuple)):
+        return [w * fator for w in cm_prototipo]
+    return cm_prototipo * fator
+
+
+_escalar_largura = _largura
 
 
 def obter_dados_sinteticos() -> pd.DataFrame:
@@ -290,6 +330,49 @@ def desenhar_rodape(canvas, doc) -> None:
     canvas.restoreState()
 
 
+def _resolver_cruzamento_det(cruzamento: Any) -> tuple[bool, Any]:
+    """Identifica e normaliza cruzamento para o DET, se aplicável.
+
+    Retorna (True, conjuntos_det) se for DET, ou (False, None) caso contrário.
+    """
+    if cruzamento is None:
+        return False, None
+    if isinstance(cruzamento, conjuntos_det):
+        return True, cruzamento
+    if isinstance(cruzamento, dict):
+        chaves_norm = {remover_acentos(str(k)).lower().strip(): v for k, v in cruzamento.items()}
+        if "estradas" in chaves_norm and "transito" in chaves_norm:
+            val_est = chaves_norm["estradas"]
+            val_tt = chaves_norm["transito"]
+            if (
+                val_est and isinstance(val_est, (list, tuple))
+                and isinstance(val_est[0], (list, tuple)) and len(val_est[0]) >= 4
+            ) or (
+                val_tt and isinstance(val_tt, (list, tuple))
+                and isinstance(val_tt[0], (list, tuple)) and len(val_tt[0]) >= 4
+            ):
+                return True, conjuntos_det(val_tt, val_est)
+            return True, carregar_det(cruzamento)
+    if isinstance(cruzamento, (list, tuple)):
+        if (
+            len(cruzamento) == 2
+            and isinstance(cruzamento[0], (list, tuple))
+            and isinstance(cruzamento[1], (list, tuple))
+            and (
+                (cruzamento[0] and isinstance(cruzamento[0][0], (list, tuple)) and len(cruzamento[0][0]) >= 4)
+                or (cruzamento[1] and isinstance(cruzamento[1][0], (list, tuple)) and len(cruzamento[1][0]) >= 4)
+            )
+        ):
+            return True, conjuntos_det(cruzamento[0], cruzamento[1])
+        try:
+            classif = classificar_mapas(cruzamento)
+            if eh_det(classif):
+                return True, carregar_det(classif)
+        except Exception:
+            pass
+    return False, None
+
+
 def montar_flowables(
     df: pd.DataFrame,
     bimestres: Sequence[int] = (1, 2, 3),
@@ -299,6 +382,7 @@ def montar_flowables(
     sabado_reproduz: str | None = None,
     cruzamento: Sequence[str | Path] | Sequence[object] | dict | None = None,
     ch_efetiva: str | Path | pd.DataFrame | None = None,
+    layout: str = "prototipo",
 ) -> list:
     """Monta a lista de flowables do relatório PDF na ordem especificada.
 
@@ -312,6 +396,14 @@ def montar_flowables(
         (vi) Seção 'Cruzamento com o mapa de turma' (C14) quando cruzamento for fornecido.
         (vii) Bloco 'CH efetiva por disciplina (horário real)' (C18).
     """
+    layout_norm = (layout or "prototipo").lower().strip()
+    if layout_norm not in ("prototipo", "app"):
+        raise ValueError(f"Layout inválido: '{layout}'. Escolha entre 'prototipo' e 'app'.")
+
+    # Helper único para escalar colWidths para 16 cm úteis no frame do app (D6)
+    def _largura(w: float | Sequence[float]) -> Any:
+        return _escalar_largura(w, layout=layout_norm)
+
     if isinstance(calendario, Calendario):
         cal = calendario
     else:
@@ -340,11 +432,17 @@ def montar_flowables(
     df_freq = tabela_frequencia(df, bimestres=lista_bimestres)
 
     styles = getSampleStyleSheet()
+    if layout_norm == "app":
+        styles["Normal"].fontName = "Times-Roman"
+
+    font_bold = "Times-Bold" if layout_norm == "app" else "Helvetica-Bold"
+    font_regular = "Times-Roman" if layout_norm == "app" else "Helvetica"
+    font_italic = "Times-Italic" if layout_norm == "app" else "Helvetica"
 
     style_titulo = ParagraphStyle(
         name="DocTitulo",
         parent=styles["Normal"],
-        fontName="Helvetica-Bold",
+        fontName=font_bold,
         fontSize=15,
         leading=18,
         textColor=COR_CABECALHO_TABELA,
@@ -354,7 +452,7 @@ def montar_flowables(
     style_subtitulo = ParagraphStyle(
         name="DocSubTitulo",
         parent=styles["Normal"],
-        fontName="Helvetica",
+        fontName=font_regular,
         fontSize=9.5,
         leading=12,
         textColor=colors.HexColor("#444444"),
@@ -362,9 +460,9 @@ def montar_flowables(
         spaceAfter=12,
     )
     style_h2 = ParagraphStyle(
-        name="SecH2",
+        name="H2Sumario" if layout_norm == "app" else "SecH2",
         parent=styles["Normal"],
-        fontName="Helvetica-Bold",
+        fontName=font_bold,
         fontSize=10.5,
         leading=13,
         textColor=COR_CABECALHO_TABELA,
@@ -374,7 +472,7 @@ def montar_flowables(
     style_corpo = ParagraphStyle(
         name="SecCorpo",
         parent=styles["Normal"],
-        fontName="Helvetica",
+        fontName=font_regular,
         fontSize=8.5,
         leading=11,
         textColor=colors.HexColor("#222222"),
@@ -383,7 +481,7 @@ def montar_flowables(
     style_caption = ParagraphStyle(
         name="SecCaption",
         parent=styles["Normal"],
-        fontName="Helvetica",
+        fontName=font_italic,
         fontSize=7.5,
         leading=9.5,
         textColor=colors.HexColor("#444444"),
@@ -391,7 +489,7 @@ def montar_flowables(
     style_cab = ParagraphStyle(
         name="TabCab",
         parent=styles["Normal"],
-        fontName="Helvetica-Bold",
+        fontName=font_bold,
         fontSize=8,
         leading=10,
         textColor=COR_TEXTO_CABECALHO_TABELA,
@@ -400,7 +498,7 @@ def montar_flowables(
     style_cel = ParagraphStyle(
         name="TabCel",
         parent=styles["Normal"],
-        fontName="Helvetica",
+        fontName=font_regular,
         fontSize=7.5,
         leading=9.5,
         textColor=colors.black,
@@ -408,12 +506,13 @@ def montar_flowables(
     style_cel_centro = ParagraphStyle(
         name="TabCelCentro",
         parent=style_cel,
+        fontName=font_regular,
         alignment=1,  # Centro
     )
     style_lgpd = ParagraphStyle(
         name="LGPDTexto",
         parent=styles["Normal"],
-        fontName="Helvetica",
+        fontName=font_regular,
         fontSize=8,
         leading=11,
         textColor=colors.HexColor("#1a202c"),
@@ -422,23 +521,46 @@ def montar_flowables(
 
     story: list = []
 
-    # Cabeçalho do documento
-    story.append(
-        Paragraph("Acompanhamento Discente e Assistência Estudantil (DAE)", style_titulo)
-    )
-    story.append(
-        Paragraph(
-            f"Relatório Integrado — Curso: <b>{curso}</b> | Ano Letivo: {cal.ano} | Cenário: <b>{cenario_norm}</b>",
-            style_subtitulo,
+    # Cabeçalho do documento (somente no layout protótipo)
+    if layout_norm == "prototipo":
+        story.append(
+            Paragraph("Acompanhamento Discente e Assistência Estudantil (DAE)", style_titulo)
         )
-    )
+        story.append(
+            Paragraph(
+                f"Relatório Integrado — Curso: <b>{curso}</b> | Ano Letivo: {cal.ano} | Cenário: <b>{cenario_norm}</b>",
+                style_subtitulo,
+            )
+        )
+
+    dae_sintetica = bool(df.attrs.get("sintetico", False))
+
+    # D8: Com DAE sintética e layout="app", o primeiro flowable é o quadro "DEMONSTRAÇÃO"
+    if layout_norm == "app" and dae_sintetica:
+        quadro_dem = [
+            Paragraph(TEXTO_DEMONSTRACAO, style_corpo)
+        ]
+        tab_dem = Table([[quadro_dem]], colWidths=_largura([17.5 * cm]))
+        tab_dem.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff9e6")),
+            ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#d9822b")),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(tab_dem)
+        story.append(Spacer(1, 0.35 * cm))
 
     # -------------------------------------------------------------------------
     # (i) Bloco "Período de apuração da frequência" (D6/D10-iii/C7)
     # -------------------------------------------------------------------------
-    story.append(
-        Paragraph("<b>1. Período de apuração da frequência</b>", style_h2)
+    titulo_1 = (
+        "Período de apuração da frequência"
+        if layout_norm == "app"
+        else "<b>1. Período de apuração da frequência</b>"
     )
+    story.append(Paragraph(titulo_1, style_h2))
     story.append(
         Paragraph(
             f"Mês de referência do snapshot: <b>{ref_mes_nome}/{cal.ano}</b>",
@@ -490,7 +612,7 @@ def montar_flowables(
 
     tab_periodo = Table(
         linhas_periodo,
-        colWidths=[2.0 * cm, 5.2 * cm, 3.4 * cm, 2.7 * cm, 2.0 * cm, 2.2 * cm],
+        colWidths=_largura([2.0 * cm, 5.2 * cm, 3.4 * cm, 2.7 * cm, 2.0 * cm, 2.2 * cm]),
     )
     tab_periodo.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
@@ -507,9 +629,12 @@ def montar_flowables(
     # -------------------------------------------------------------------------
     # (ii) Bloco "Calendário acadêmico e carga horária efetiva" (C7)
     # -------------------------------------------------------------------------
-    story.append(
-        Paragraph("<b>2. Calendário acadêmico e carga horária efetiva</b>", style_h2)
+    titulo_2 = (
+        "Calendário acadêmico e carga horária efetiva"
+        if layout_norm == "app"
+        else "<b>2. Calendário acadêmico e carga horária efetiva</b>"
     )
+    story.append(Paragraph(titulo_2, style_h2))
 
     cal_arquivo_nome = (
         Path(calendario).name
@@ -621,7 +746,7 @@ def montar_flowables(
     row_soma.append(Paragraph(f"<b>{somas_col['Total']}</b>", style_cel_centro))
     linhas_sem.append(row_soma)
 
-    tab_sem = Table(linhas_sem, colWidths=col_w_sem)
+    tab_sem = Table(linhas_sem, colWidths=_largura(col_w_sem))
     tab_sem.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
         ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
@@ -685,7 +810,7 @@ def montar_flowables(
 
     tab_faixas = Table(
         linhas_faixas,
-        colWidths=[2.6 * cm, 2.0 * cm, 3.2 * cm, 3.2 * cm, 3.1 * cm, 3.4 * cm],
+        colWidths=_largura([2.6 * cm, 2.0 * cm, 3.2 * cm, 3.2 * cm, 3.1 * cm, 3.4 * cm]),
     )
     tab_faixas.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
@@ -710,9 +835,12 @@ def montar_flowables(
     # -------------------------------------------------------------------------
     # (iii) Trecho da tabela 2.1 com a coluna extra “Prog.” (siglas de programas)
     # -------------------------------------------------------------------------
-    story.append(
-        Paragraph("<b>3. Desempenho e Frequência por Aluno (Trecho Tabela 2.1 com Programas)</b>", style_h2)
+    titulo_3 = (
+        "Desempenho e Frequência por Aluno (Trecho Tabela 2.1 com Programas)"
+        if layout_norm == "app"
+        else "<b>3. Desempenho e Frequência por Aluno (Trecho Tabela 2.1 com Programas)</b>"
     )
+    story.append(Paragraph(titulo_3, style_h2))
     story.append(
         Paragraph(
             "Demonstração da inclusão da coluna <b>Prog.</b> (siglas dos programas DAE) "
@@ -762,7 +890,7 @@ def montar_flowables(
 
     tab_21 = Table(
         linhas_21,
-        colWidths=[4.6 * cm, 2.5 * cm, 2.3 * cm, 2.3 * cm, 2.3 * cm, 1.8 * cm, 1.7 * cm],
+        colWidths=_largura([4.6 * cm, 2.5 * cm, 2.3 * cm, 2.3 * cm, 2.3 * cm, 1.8 * cm, 1.7 * cm]),
     )
     tab_21.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
@@ -779,9 +907,12 @@ def montar_flowables(
     # -------------------------------------------------------------------------
     # (iv) Quadro “Tratamento de dados pessoais (LGPD)” com NOTA_LGPD (D10-ii)
     # -------------------------------------------------------------------------
-    story.append(
-        Paragraph("<b>4. Tratamento de dados pessoais (LGPD)</b>", style_h2)
+    titulo_4 = (
+        "Tratamento de dados pessoais (LGPD)"
+        if layout_norm == "app"
+        else "<b>4. Tratamento de dados pessoais (LGPD)</b>"
     )
+    story.append(Paragraph(titulo_4, style_h2))
 
     quadro_lgpd_conteudo = [
         Paragraph(
@@ -789,7 +920,7 @@ def montar_flowables(
             style_lgpd,
         )
     ]
-    tab_quadro_lgpd = Table([[quadro_lgpd_conteudo]], colWidths=[17.5 * cm])
+    tab_quadro_lgpd = Table([[quadro_lgpd_conteudo]], colWidths=_largura([17.5 * cm]))
     tab_quadro_lgpd.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f0f4f8")),
         ("BOX", (0, 0), (-1, -1), 0.75, COR_CABECALHO_TABELA),
@@ -804,9 +935,12 @@ def montar_flowables(
     # -------------------------------------------------------------------------
     # (v) Seção “Estudantes acompanhados pela Assistência Estudantil” (D10-iv)
     # -------------------------------------------------------------------------
-    story.append(
-        Paragraph("<b>5. Estudantes acompanhados pela Assistência Estudantil</b>", style_h2)
+    titulo_5 = (
+        "Estudantes acompanhados pela Assistência Estudantil"
+        if layout_norm == "app"
+        else "<b>5. Estudantes acompanhados pela Assistência Estudantil</b>"
     )
+    story.append(Paragraph(titulo_5, style_h2))
 
     cab_estudantes = [
         Paragraph("<b>Nome do Estudante</b>", style_cab),
@@ -885,7 +1019,7 @@ def montar_flowables(
 
     col_widths_est = [larg_nome, larg_progs] + [larg_bim] * n_bims + [larg_acum, larg_alerta]
 
-    tab_estudantes = Table(linhas_estudantes, colWidths=col_widths_est)
+    tab_estudantes = Table(linhas_estudantes, colWidths=_largura(col_widths_est))
     tab_estudantes.setStyle(TableStyle(estilos_tabela_est))
 
     bloco_iv = [
@@ -901,25 +1035,218 @@ def montar_flowables(
     # (vi) Seção “Cruzamento com o mapa de turma” (C14)
     # -------------------------------------------------------------------------
     conjuntos: list = []
+    eh_det_cruz, det_obj = _resolver_cruzamento_det(cruzamento)
     if cruzamento:
         story.append(Spacer(1, 0.35 * cm))
-        story.append(
-            Paragraph("<b>6. Cruzamento com o mapa de turma</b>", style_h2)
+        titulo_6 = (
+            "Cruzamento com o mapa de turma"
+            if layout_norm == "app"
+            else "<b>6. Cruzamento com o mapa de turma</b>"
         )
+        story.append(Paragraph(titulo_6, style_h2))
 
-        if isinstance(cruzamento, (str, Path)):
-            conjuntos = processar_multiplos_bimestres([str(cruzamento)])
-        elif isinstance(cruzamento, (list, tuple)) and cruzamento:
-            primeiro = cruzamento[0]
-            if isinstance(primeiro, (str, Path)):
-                conjuntos = processar_multiplos_bimestres([str(p) for p in cruzamento])
-            elif isinstance(primeiro, (tuple, list)) and len(primeiro) >= 4:
-                conjuntos = list(cruzamento)
+        if eh_det_cruz:
+            r_det = resumo_det(det_obj)
+            est_n = r_det.alunos_por_curso.get("Estradas", 0)
+            tt_n = r_det.alunos_por_curso.get("Trânsito", 0)
+
+            linhas_mapa = [
+                [
+                    Paragraph("<b>Alunos DET (Estradas + Trânsito)</b>", style_cab),
+                    Paragraph("<b>Estradas</b>", style_cab),
+                    Paragraph("<b>Trânsito</b>", style_cab),
+                    Paragraph("<b>Interseção</b>", style_cab),
+                ],
+                [
+                    Paragraph(f"{r_det.alunos_total} alunos", style_cel_centro),
+                    Paragraph(f"{est_n} alunos", style_cel_centro),
+                    Paragraph(f"{tt_n} alunos", style_cel_centro),
+                    Paragraph(str(r_det.intersecao), style_cel_centro),
+                ],
+            ]
+            tab_mapa = Table(
+                linhas_mapa,
+                colWidths=_largura([6.5 * cm, 3.5 * cm, 3.5 * cm, 4.0 * cm]),
+            )
+            tab_mapa.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+            ]))
+            story.append(tab_mapa)
+            story.append(Spacer(1, 0.2 * cm))
+
+            story.append(
+                Paragraph(
+                    f"<b>{ROTULO_DET}:</b> {r_det.alunos_total} estudantes no departamento "
+                    f"(Estradas: {est_n}, Trânsito: {tt_n}, interseção: {r_det.intersecao}).",
+                    style_caption,
+                )
+            )
+            story.append(Spacer(1, 0.2 * cm))
+
+            # Recorte Pé-de-Meia com a tupla
+            curso_tupla = ("estradas", "transito")
+            contagem_curso = contagem_pe_de_meia(df, curso_contem=curso_tupla)
+
+            mats_mapa = set()
+            for conj in det_obj:
+                for item in conj:
+                    df_f = item[1]
+                    if "matricula" in df_f.columns:
+                        mats_mapa.update(df_f["matricula"].apply(_normalizar_matricula).dropna().unique())
+
+            contagem_mapa = contagem_pe_de_meia(df, matriculas=mats_mapa)
+
+            linhas_pdm = [
+                [
+                    Paragraph("<b>Situação Pé-de-Meia</b>", style_cab),
+                    Paragraph("<b>Estudantes no Mapa</b>", style_cab),
+                    Paragraph("<b>Total no Curso (Estradas + Trânsito)</b>", style_cab),
+                ],
+                [
+                    Paragraph("Elegível", style_cel),
+                    Paragraph(str(contagem_mapa["elegivel"]), style_cel_centro),
+                    Paragraph(str(contagem_curso["elegivel"]), style_cel_centro),
+                ],
+                [
+                    Paragraph("Não elegível", style_cel),
+                    Paragraph(str(contagem_mapa["nao_elegivel"]), style_cel_centro),
+                    Paragraph(str(contagem_curso["nao_elegivel"]), style_cel_centro),
+                ],
+                [
+                    Paragraph("N/C (Nada consta)", style_cel),
+                    Paragraph(str(contagem_mapa["nada_consta"]), style_cel_centro),
+                    Paragraph(str(contagem_curso["nada_consta"]), style_cel_centro),
+                ],
+            ]
+            if contagem_mapa["indefinida"] > 0 or contagem_curso["indefinida"] > 0:
+                linhas_pdm.append([
+                    Paragraph("Elegibilidade indefinida", style_cel),
+                    Paragraph(str(contagem_mapa["indefinida"]), style_cel_centro),
+                    Paragraph(str(contagem_curso["indefinida"]), style_cel_centro),
+                ])
+            linhas_pdm.append([
+                Paragraph("<b>Total</b>", style_cel),
+                Paragraph(f"<b>{contagem_mapa['total']}</b>", style_cel_centro),
+                Paragraph(f"<b>{contagem_curso['total']}</b>", style_cel_centro),
+            ])
+
+            tab_pdm = Table(linhas_pdm, colWidths=_largura([7.5 * cm, 5.0 * cm, 5.0 * cm]))
+            tab_pdm.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
+                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f0f4f8")),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+            ]))
+            story.append(tab_pdm)
+
+            dae_sintetica = bool(df.attrs.get("sintetico", False))
+            if dae_sintetica:
+                story.append(Spacer(1, 0.2 * cm))
+                quadro_pendencia = [
+                    Paragraph(
+                        "<b>Cruzamento pendente:</b> Planilha oficial de acompanhamento discente da DAE "
+                        "não fornecida (base sintética em uso). A conciliação individual de faltas e o "
+                        "cruzamento com os registros da Assistência Estudantil estão pendentes até a "
+                        "disponibilização do arquivo oficial da DAE.",
+                        style_corpo,
+                    )
+                ]
+                tab_pendencia = Table([[quadro_pendencia]], colWidths=_largura([17.5 * cm]))
+                tab_pendencia.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff9e6")),
+                    ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#d9822b")),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ]))
+                story.append(tab_pendencia)
             else:
-                conjuntos = processar_multiplos_bimestres([str(p) for p in cruzamento])
+                df_unido, resumo = cruzar(df, det_obj, bimestres=lista_bimestres)
+                tot_cruz = resumo["total"]
+                pct_dois = f"{resumo['nos_dois'] / tot_cruz:.1%}" if tot_cruz > 0 else "—"
+                pct_app = f"{resumo['so_app'] / tot_cruz:.1%}" if tot_cruz > 0 else "—"
+                pct_dae = f"{resumo['so_dae'] / tot_cruz:.1%}" if tot_cruz > 0 else "—"
 
-        if conjuntos:
-            res_mapa = resumo_mapa(conjuntos)[0]
+                linhas_cob = [
+                    [
+                        Paragraph("<b>Situação da Cobertura</b>", style_cab),
+                        Paragraph("<b>Estudantes</b>", style_cab),
+                        Paragraph("<b>Percentual</b>", style_cab),
+                    ],
+                    [
+                        Paragraph("Nos dois (conciliados)", style_cel),
+                        Paragraph(str(resumo["nos_dois"]), style_cel_centro),
+                        Paragraph(pct_dois, style_cel_centro),
+                    ],
+                    [
+                        Paragraph("Só no Mapa de Turma", style_cel),
+                        Paragraph(str(resumo["so_app"]), style_cel_centro),
+                        Paragraph(pct_app, style_cel_centro),
+                    ],
+                    [
+                        Paragraph("Só na DAE", style_cel),
+                        Paragraph(str(resumo["so_dae"]), style_cel_centro),
+                        Paragraph(pct_dae, style_cel_centro),
+                    ],
+                    [
+                        Paragraph("<b>Total</b>", style_cel),
+                        Paragraph(f"<b>{tot_cruz}</b>", style_cel_centro),
+                        Paragraph("100,0%", style_cel_centro),
+                    ],
+                ]
+                tab_cob = Table(linhas_cob, colWidths=_largura([8.5 * cm, 4.5 * cm, 4.5 * cm]))
+                tab_cob.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
+                    ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#f0f4f8")),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                ]))
+                story.append(Spacer(1, 0.25 * cm))
+                story.append(tab_cob)
+
+                diff_msgs = []
+                for b in lista_bimestres:
+                    col_diff = f"diff_faltas_bim_{b}"
+                    if col_diff in df_unido.columns:
+                        diff_abs = df_unido.loc[df_unido["_merge"] == "both", col_diff].dropna().abs()
+                        if len(diff_abs) > 0:
+                            med = float(diff_abs.median())
+                            p90 = float(diff_abs.quantile(0.90))
+                            diff_msgs.append(f"{b}º BI: mediana {med:.1f}, P90 {p90:.1f}")
+                if diff_msgs:
+                    story.append(Spacer(1, 0.15 * cm))
+                    story.append(
+                        Paragraph("<b>Discrepância de faltas (|diff_faltas|):</b> " + " | ".join(diff_msgs), style_caption)
+                    )
+        else:
+            if isinstance(cruzamento, (str, Path)):
+                conjuntos = processar_multiplos_bimestres([str(cruzamento)])
+            elif isinstance(cruzamento, (list, tuple)) and cruzamento:
+                primeiro = cruzamento[0]
+                if isinstance(primeiro, (str, Path)):
+                    conjuntos = processar_multiplos_bimestres([str(p) for p in cruzamento])
+                elif isinstance(primeiro, (tuple, list)) and len(primeiro) >= 4:
+                    conjuntos = list(cruzamento)
+                else:
+                    conjuntos = processar_multiplos_bimestres([str(p) for p in cruzamento])
+
+            if conjuntos:
+                res_mapa = resumo_mapa(conjuntos)[0]
 
             linhas_mapa = [
                 [
@@ -937,7 +1264,7 @@ def montar_flowables(
             ]
             tab_mapa = Table(
                 linhas_mapa,
-                colWidths=[4.5 * cm, 4.0 * cm, 4.5 * cm, 4.5 * cm],
+                colWidths=_largura([4.5 * cm, 4.0 * cm, 4.5 * cm, 4.5 * cm]),
             )
             tab_mapa.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
@@ -974,7 +1301,7 @@ def montar_flowables(
                         style_corpo,
                     )
                 ]
-                tab_pendencia = Table([[quadro_pendencia]], colWidths=[17.5 * cm])
+                tab_pendencia = Table([[quadro_pendencia]], colWidths=_largura([17.5 * cm]))
                 tab_pendencia.setStyle(TableStyle([
                     ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff9e6")),
                     ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#d9822b")),
@@ -1019,7 +1346,7 @@ def montar_flowables(
                         Paragraph("100,0%", style_cel_centro),
                     ],
                 ]
-                tab_cob = Table(linhas_cob, colWidths=[8.5 * cm, 4.5 * cm, 4.5 * cm])
+                tab_cob = Table(linhas_cob, colWidths=_largura([8.5 * cm, 4.5 * cm, 4.5 * cm]))
                 tab_cob.setStyle(TableStyle([
                     ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
                     ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
@@ -1086,7 +1413,7 @@ def montar_flowables(
                     Paragraph(f"<b>{contagem_curso['total']}</b>", style_cel_centro),
                 ])
 
-                tab_pdm = Table(linhas_pdm, colWidths=[7.5 * cm, 5.0 * cm, 5.0 * cm])
+                tab_pdm = Table(linhas_pdm, colWidths=_largura([7.5 * cm, 5.0 * cm, 5.0 * cm]))
                 tab_pdm.setStyle(TableStyle([
                     ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
                     ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
@@ -1135,9 +1462,12 @@ def montar_flowables(
 
     if df_ch is None:
         story.append(Spacer(1, 0.35 * cm))
-        story.append(
-            Paragraph(f"<b>{num_sec} CH efetiva por disciplina (horário real)</b>", style_h2)
+        titulo_ch = (
+            "CH efetiva por disciplina (horário real)"
+            if layout_norm == "app"
+            else f"<b>{num_sec} CH efetiva por disciplina (horário real)</b>"
         )
+        story.append(Paragraph(titulo_ch, style_h2))
         quadro_ausente = [
             Paragraph(
                 "<b>Planilha de CH efetiva ausente:</b> frequência por disciplina usa a faixa do calendário. "
@@ -1146,7 +1476,7 @@ def montar_flowables(
                 style_corpo,
             )
         ]
-        tab_ausente = Table([[quadro_ausente]], colWidths=[17.5 * cm])
+        tab_ausente = Table([[quadro_ausente]], colWidths=_largura([17.5 * cm]))
         tab_ausente.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff9e6")),
             ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#d9822b")),
@@ -1158,12 +1488,37 @@ def montar_flowables(
         story.append(tab_ausente)
     else:
         divs = divergencias_calendario(df_ch, cal)
-        nota_sab = nota_sabados(cal, curso)
+        if eh_det_cruz:
+            sabs_det = sabados_do_responsavel(cal, "DET")
+            if not sabs_det:
+                sabs_det = sorted(list(set(sabados_do_responsavel(cal, "Estradas") + sabados_do_responsavel(cal, "Trânsito"))))
+            detalhes_sabs = []
+            for dt in sabs_det:
+                b_num = None
+                for num, b in cal.bimestres.items():
+                    if b.inicio <= dt <= b.fim:
+                        b_num = num
+                        break
+                fmt_dt = dt.strftime("%d/%m")
+                if b_num is not None:
+                    detalhes_sabs.append(f"{fmt_dt} ({b_num}º bimestre)")
+                else:
+                    detalhes_sabs.append(fmt_dt)
+            sabs_str = ", ".join(detalhes_sabs) if detalhes_sabs else "23/05 (2º bimestre)"
+            nota_sab = (
+                f"Sábado(s) letivo(s) atribuído(s) aos cursos de Estradas e Trânsito (DET): {sabs_str}. "
+                f"Os sábados letivos não entram no cômputo da carga horária efetiva das disciplinas (cenário A)."
+            )
+        else:
+            nota_sab = nota_sabados(cal, curso)
 
         story.append(Spacer(1, 0.35 * cm))
-        story.append(
-            Paragraph(f"<b>{num_sec} CH efetiva por disciplina (horário real)</b>", style_h2)
+        titulo_ch = (
+            "CH efetiva por disciplina (horário real)"
+            if layout_norm == "app"
+            else f"<b>{num_sec} CH efetiva por disciplina (horário real)</b>"
         )
+        story.append(Paragraph(titulo_ch, style_h2))
         story.append(
             Paragraph(
                 f"<b>Fonte:</b> planilha <code>{nome_planilha}</code> (cenário A — sem sábados; "
@@ -1175,7 +1530,105 @@ def montar_flowables(
         for d in divs:
             story.append(Paragraph(f"• {d}", style_caption))
 
-        if not conjuntos:
+        if eh_det_cruz:
+            bim_det = int(r_det.bimestres[0] if r_det.bimestres else (lista_bimestres[0] if lista_bimestres else 1))
+            res_freq_det = resumo_frequencia_det(det_obj, df_ch, bimestre=bim_det, calendario=cal)
+            df_det_res = res_freq_det.df
+            sem_horario_det = res_freq_det.sem_horario
+
+            story.append(
+                Paragraph(
+                    f"<b>Resumo da oferta DET (Estradas + Trânsito):</b> {len(df_det_res)} disciplinas da planilha.",
+                    style_corpo,
+                )
+            )
+            story.append(Spacer(1, 0.15 * cm))
+
+            linhas_tab_ch = [
+                [
+                    Paragraph("<b>Disciplina</b>", style_cab),
+                    Paragraph("<b>Escopo</b>", style_cab),
+                    Paragraph("<b>Aulas/sem</b>", style_cab),
+                    Paragraph(f"<b>CH {bim_det}º BI</b>", style_cab),
+                    Paragraph("<b>CH efetiva no ano</b>", style_cab),
+                    Paragraph("<b>% do nominal</b>", style_cab),
+                    Paragraph("<b>Limite de faltas p/ 75%</b>", style_cab),
+                    Paragraph("<b>&lt; 75% freq.</b>", style_cab),
+                    Paragraph("<b>Fonte</b>", style_cab),
+                ]
+            ]
+
+            for _, row in df_det_res.iterrows():
+                ch_b = row.get("ch_bim")
+                lim_f = row.get("limite_faltas_bim")
+                n_abaixo = row.get("n_abaixo_75")
+                pct_nom = row.get("%_nominal")
+                ch_ano = row.get("ch_efetiva_ano")
+
+                ch_str = f"{int(ch_b)} h/a" if pd.notna(ch_b) else "—"
+                ch_ano_str = f"{int(ch_ano)} h/a" if pd.notna(ch_ano) else "—"
+                pct_str = f"{pct_nom:.1%}" if pd.notna(pct_nom) else "—"
+                lim_str = str(int(lim_f)) if pd.notna(lim_f) else "—"
+
+                if pd.notna(n_abaixo):
+                    if int(n_abaixo) > 0:
+                        abaixo_p = Paragraph(f"<b><font color='#c00000'>{int(n_abaixo)}</font></b>", style_cel_centro)
+                    else:
+                        abaixo_p = Paragraph("0", style_cel_centro)
+                else:
+                    abaixo_p = Paragraph("—", style_cel_centro)
+
+                aulas_sem = row.get("aulas_sem")
+                aulas_str = str(int(aulas_sem)) if pd.notna(aulas_sem) else "—"
+                fonte_str = "Planilha" if row.get("fonte") == "planilha" else "Sem horário na planilha"
+
+                linhas_tab_ch.append([
+                    Paragraph(str(row["disciplina"]), style_cel),
+                    Paragraph(str(row["escopo"]), style_cel_centro),
+                    Paragraph(aulas_str, style_cel_centro),
+                    Paragraph(ch_str, style_cel_centro),
+                    Paragraph(ch_ano_str, style_cel_centro),
+                    Paragraph(pct_str, style_cel_centro),
+                    Paragraph(lim_str, style_cel_centro),
+                    abaixo_p,
+                    Paragraph(fonte_str, style_cel_centro),
+                ])
+
+            tab_ch = Table(
+                linhas_tab_ch,
+                colWidths=_largura([4.2 * cm, 2.3 * cm, 1.3 * cm, 1.5 * cm, 1.7 * cm, 1.5 * cm, 1.8 * cm, 1.4 * cm, 1.8 * cm]),
+            )
+            tab_ch.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
+                ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+            ]))
+            story.append(tab_ch)
+
+            if sem_horario_det:
+                partes_sem = []
+                for c_nome in sorted(sem_horario_det.keys()):
+                    discs = sem_horario_det[c_nome]
+                    if discs:
+                        partes_sem.append(f"<b>{c_nome}:</b> {', '.join(sorted(discs))}")
+                if partes_sem:
+                    story.append(Spacer(1, 0.15 * cm))
+                    story.append(
+                        Paragraph(
+                            f"<b>Sem horário na planilha (por curso):</b> {' | '.join(partes_sem)} "
+                            f"(aulas lecionadas em laboratórios, oficinas ou instalações fora das salas 305–437).",
+                            style_caption,
+                        )
+                    )
+
+            story.append(Spacer(1, 0.15 * cm))
+            story.append(Paragraph(f"<b>Sábados letivos:</b> {nota_sab}", style_caption))
+
+        elif not conjuntos:
             story.append(Spacer(1, 0.15 * cm))
 
             # C18: sem mapas, só o resumo_por_carga das linhas do --curso
@@ -1217,7 +1670,7 @@ def montar_flowables(
                     Paragraph("100,0%", style_cel_centro),
                 ],
             ]
-            tab_dist = Table(linhas_dist, colWidths=[8.5 * cm, 4.5 * cm, 4.5 * cm])
+            tab_dist = Table(linhas_dist, colWidths=_largura([8.5 * cm, 4.5 * cm, 4.5 * cm]))
             tab_dist.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
                 ("TEXTCOLOR", (0, 0), (-1, 0), COR_TEXTO_CABECALHO_TABELA),
@@ -1237,7 +1690,7 @@ def montar_flowables(
                     style_corpo,
                 )
             ]
-            tab_aviso = Table([[quadro_aviso_mapa]], colWidths=[17.5 * cm])
+            tab_aviso = Table([[quadro_aviso_mapa]], colWidths=_largura([17.5 * cm]))
             tab_aviso.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff9e6")),
                 ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#d9822b")),
@@ -1335,7 +1788,7 @@ def montar_flowables(
 
                 tab_ch = Table(
                     linhas_tab_ch,
-                    colWidths=[4.6 * cm, 1.6 * cm, 1.7 * cm, 1.9 * cm, 1.7 * cm, 2.1 * cm, 1.7 * cm, 2.2 * cm],
+                    colWidths=_largura([4.6 * cm, 1.6 * cm, 1.7 * cm, 1.9 * cm, 1.7 * cm, 2.1 * cm, 1.7 * cm, 2.2 * cm]),
                 )
                 tab_ch.setStyle(TableStyle([
                     ("BACKGROUND", (0, 0), (-1, 0), COR_CABECALHO_TABELA),
@@ -1412,6 +1865,7 @@ def gerar_prototipo_pdf(
     sabado_reproduz: str | None = None,
     caminhos_mapas: Sequence[str | Path] | str | Path | None = None,
     caminho_ch: str | Path | None = None,
+    layout: str = "prototipo",
 ) -> Path:
     """Gera o protótipo de destaque em PDF com os dados da DAE (ou sintéticos)."""
     # 1. Obtenção dos dados
@@ -1422,8 +1876,27 @@ def gerar_prototipo_pdf(
         df = carregar_dae(caminho_dae)
         df.attrs["sintetico"] = False
 
-    # 2. Filtragem pelo curso se a coluna existir e houver dados correspondentes
-    if curso and "curso" in df.columns:
+    # 5. Normalização dos mapas para cruzamento (C14)
+    lista_mapas: list[str | Path] | None = None
+    if caminhos_mapas:
+        if isinstance(caminhos_mapas, (str, Path)):
+            lista_mapas = [caminhos_mapas]
+        else:
+            lista_mapas = list(caminhos_mapas)
+
+    cruzamento_arg: Any = lista_mapas
+    eh_det_mapas = False
+    if lista_mapas:
+        try:
+            classif = classificar_mapas(lista_mapas)
+            if eh_det(classif):
+                eh_det_mapas = True
+                cruzamento_arg = carregar_det(classif)
+        except Exception:
+            cruzamento_arg = lista_mapas
+
+    # 2. Filtragem pelo curso se a coluna existir e houver dados correspondentes (não filtra se for DET)
+    if not eh_det_mapas and curso and "curso" in df.columns:
         mask_curso = df["curso"].str.upper() == curso.upper()
         if mask_curso.any():
             attrs_salvas = df.attrs.copy()
@@ -1444,14 +1917,6 @@ def gerar_prototipo_pdf(
         caminho_saida=caminho_saida,
     )
 
-    # 5. Normalização dos mapas para cruzamento (C14)
-    lista_mapas: list[str | Path] | None = None
-    if caminhos_mapas:
-        if isinstance(caminhos_mapas, (str, Path)):
-            lista_mapas = [caminhos_mapas]
-        else:
-            lista_mapas = list(caminhos_mapas)
-
     # 6. Montagem dos flowables
     story = montar_flowables(
         df,
@@ -1460,8 +1925,9 @@ def gerar_prototipo_pdf(
         cenario=cenario,
         calendario=calendario,
         sabado_reproduz=sabado_reproduz,
-        cruzamento=lista_mapas,
+        cruzamento=cruzamento_arg,
         ch_efetiva=caminho_ch,
+        layout=layout,
     )
 
     # 7. Geração do PDF com SimpleDocTemplate e rodapé em todas as páginas (D10-i)

@@ -11,6 +11,7 @@ import pytest
 
 from carregar import carregar_dae
 from cruzamento import _eh_matricula_valida, _executar_cli, contagem_pe_de_meia, cruzar, resumo_mapa
+from tests.conftest import mapa_sintetico
 
 
 def test_cruzamento_casa_e_sobra_de_cada_lado() -> None:
@@ -419,4 +420,206 @@ def test_cli_descoberta_com_mapa_dae_e_planilha_ch_cruzamento_completo(
     assert "PENDENTE:" not in saida
     assert "20261010001" not in saida
     assert "Ana Silva" not in saida
+
+
+def test_contagem_pe_de_meia_tupla_cursos_uniao() -> None:
+    """Verifica que contagem_pe_de_meia com tupla casa 'TÉCNICO EM ESTRADAS' e 'Técnico em Trânsito' e soma."""
+    df_dae = pd.DataFrame(
+        [
+            {"matricula": "20261010001", "curso": "TÉCNICO EM ESTRADAS", "pe_de_meia": "elegivel"},
+            {"matricula": "20261010002", "curso": "Técnico em Trânsito", "pe_de_meia": "elegivel"},
+            {"matricula": "20261010003", "curso": "TÉCNICO EM EDIFICAÇÕES", "pe_de_meia": "elegivel"},
+            {"matricula": "20261010004", "curso": "Técnico em Estradas", "pe_de_meia": "nada_consta"},
+            {"matricula": "20261010005", "curso": "TÉCNICO EM TRÂNSITO", "pe_de_meia": "Não elegível"},
+        ]
+    )
+    contagem = contagem_pe_de_meia(df_dae, curso_contem=("estradas", "transito"))
+    assert contagem["elegivel"] == 2
+    assert contagem["nada_consta"] == 1
+    assert contagem["nao_elegivel"] == 1
+    assert contagem["indefinida"] == 0
+    assert contagem["total"] == 4
+
+
+def test_cli_det_dois_mapas_sinteticos_sem_dae(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """CLI com dois mapas sintéticos EST+TT (via monkeypatch como no passo 2) sem DAE → retorno 0, 'Estradas + Trânsito', PENDENTE:, nenhuma matrícula/nome."""
+    import core.manipulacao as manipulacao
+
+    df_est = mapa_sintetico(
+        curso="TÉCNICO EM ESTRADAS",
+        bimestre=1,
+        turma="EST.2A",
+        disciplinas={"TOP": "TOPOGRAFIA"},
+        alunos=[
+            ("20261010001", "Ana Silva", {"TOP": 15.0}, {"TOP": 0}),
+            ("20261010003", "Carlos Lima", {"TOP": 18.0}, {"TOP": 0}),
+        ],
+    )
+    df_tt = mapa_sintetico(
+        curso="TÉCNICO EM TRÂNSITO",
+        bimestre=1,
+        turma="TRA.2A",
+        disciplinas={"TRA": "TRANSPORTES"},
+        alunos=[
+            ("20261010001", "Ana Silva", {"TRA": 16.0}, {"TRA": 0}),
+            ("20261010002", "Bruno Souza", {"TRA": 17.0}, {"TRA": 0}),
+        ],
+    )
+
+    original_ler = manipulacao._ler_xls_bruto
+
+    def _mock_ler(arquivo_xls):
+        if isinstance(arquivo_xls, pd.DataFrame):
+            return arquivo_xls
+        nome = Path(str(arquivo_xls)).name.lower()
+        if "est" in nome:
+            return df_est
+        if "tra" in nome or "tt" in nome:
+            return df_tt
+        return original_ler(arquivo_xls)
+
+    monkeypatch.setattr(manipulacao, "_ler_xls_bruto", _mock_ler)
+
+    (tmp_path / "Estradas_2026.xls").touch()
+    (tmp_path / "Transito_2026.xls").touch()
+    monkeypatch.setattr("cruzamento.PASTA_DADOS", tmp_path)
+
+    codigo = _executar_cli([])
+
+    assert codigo == 0
+    saida = capsys.readouterr().out
+    assert "Estradas + Trânsito" in saida
+    assert "PENDENTE:" in saida
+    assert "DET" in saida
+    assert "interseção 0" in saida
+
+    # LGPD: nenhuma matrícula ou nome discente pode vazar
+    for mat in ("20261010001", "20261010002", "20261010003"):
+        assert mat not in saida
+    for nome in ("Ana", "Silva", "Bruno", "Souza", "Carlos", "Lima"):
+        assert nome not in saida
+
+
+def test_cli_det_dois_mapas_sinteticos_com_dae(
+    tmp_path: Path,
+    caminho_xlsx: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """CLI com dois mapas sintéticos EST+TT e .xlsx sintético da DAE → cobertura sobre o conjunto DET e 'N/C (Nada consta)'."""
+    import shutil
+    import core.manipulacao as manipulacao
+
+    df_est = mapa_sintetico(
+        curso="TÉCNICO EM ESTRADAS",
+        bimestre=1,
+        turma="EST.2A",
+        disciplinas={"TOP": "TOPOGRAFIA"},
+        alunos=[
+            ("20261010001", "Ana Silva", {"TOP": 15.0}, {"TOP": 0}),
+            ("20261010003", "Carlos Lima", {"TOP": 18.0}, {"TOP": 0}),
+        ],
+    )
+    df_tt = mapa_sintetico(
+        curso="TÉCNICO EM TRÂNSITO",
+        bimestre=1,
+        turma="TRA.2A",
+        disciplinas={"TRA": "TRANSPORTES"},
+        alunos=[
+            ("20261010001", "Ana Silva", {"TRA": 16.0}, {"TRA": 0}),
+            ("20261010002", "Bruno Souza", {"TRA": 17.0}, {"TRA": 0}),
+        ],
+    )
+
+    original_ler = manipulacao._ler_xls_bruto
+
+    def _mock_ler(arquivo_xls):
+        if isinstance(arquivo_xls, pd.DataFrame):
+            return arquivo_xls
+        nome = Path(str(arquivo_xls)).name.lower()
+        if "est" in nome:
+            return df_est
+        if "tra" in nome or "tt" in nome:
+            return df_tt
+        return original_ler(arquivo_xls)
+
+    monkeypatch.setattr(manipulacao, "_ler_xls_bruto", _mock_ler)
+
+    (tmp_path / "Estradas_2026.xls").touch()
+    (tmp_path / "Transito_2026.xls").touch()
+    shutil.copy(caminho_xlsx, tmp_path / "dae_sintetico_2026.xlsx")
+    monkeypatch.setattr("cruzamento.PASTA_DADOS", tmp_path)
+
+    codigo = _executar_cli([])
+
+    assert codigo == 0
+    saida = capsys.readouterr().out
+    assert "Resumo de Cobertura:" in saida
+    assert "N/C (Nada consta)" in saida
+    assert "Estradas + Trânsito" in saida
+    assert "PENDENTE:" not in saida
+
+    # Cobertura sobre o conjunto DET (3 discentes no mapa, 4 na DAE: 3 nos dois, 1 só DAE, 0 só app)
+    assert "Nos dois: 3" in saida
+    assert "Só no App: 0" in saida
+    assert "Só na DAE: 1" in saida
+    assert "Total: 4" in saida
+
+    # LGPD: nenhuma matrícula ou nome discente pode vazar
+    for mat in ("20261010001", "20261010002", "20261010003", "20261010004"):
+        assert mat not in saida
+    for nome in ("Ana", "Silva", "Bruno", "Souza", "Carlos", "Lima", "Daniela", "Rocha"):
+        assert nome not in saida
+
+
+def test_cruzamento_direto_com_conjuntos_det(
+    caminho_xlsx: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verifica que cruzar aceita diretamente a estrutura conjuntos_det."""
+    from det import carregar_det, conjuntos_det
+    import core.manipulacao as manipulacao
+
+    df_est = mapa_sintetico(
+        curso="TÉCNICO EM ESTRADAS",
+        bimestre=1,
+        turma="EST.2A",
+        disciplinas={"TOP": "TOPOGRAFIA"},
+        alunos=[
+            ("20261010001", "Ana Silva", {"TOP": 15.0}, {"TOP": 2}),
+            ("20261010003", "Carlos Lima", {"TOP": 18.0}, {"TOP": 0}),
+        ],
+    )
+    df_tt = mapa_sintetico(
+        curso="TÉCNICO EM TRÂNSITO",
+        bimestre=1,
+        turma="TRA.2A",
+        disciplinas={"TRA": "TRANSPORTES"},
+        alunos=[
+            ("20261010001", "Ana Silva", {"TRA": 16.0}, {"TRA": 0}),
+            ("20261010002", "Bruno Souza", {"TRA": 17.0}, {"TRA": 5}),
+        ],
+    )
+
+    original_ler = manipulacao._ler_xls_bruto
+
+    def _mock_ler(arquivo_xls):
+        if isinstance(arquivo_xls, pd.DataFrame):
+            return arquivo_xls
+        return original_ler(arquivo_xls)
+
+    monkeypatch.setattr(manipulacao, "_ler_xls_bruto", _mock_ler)
+
+    cd = carregar_det([df_est, df_tt])
+    assert isinstance(cd, conjuntos_det)
+
+    df_dae = carregar_dae(caminho_xlsx)
+    df_unido, resumo = cruzar(df_dae, cd)
+
+    assert resumo["nos_dois"] == 3
+    assert resumo["so_app"] == 0
+    assert resumo["so_dae"] == 1
+    assert resumo["total"] == 4
+
 

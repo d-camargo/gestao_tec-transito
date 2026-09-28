@@ -12,6 +12,7 @@ import pytest
 from ch_efetiva import (
     CAMINHO_CH_EFETIVA_PADRAO,
     CAMINHO_ESTRADAS_PADRAO,
+    CAMINHO_TRANSITO_PADRAO,
     PADRAO_TURMA,
     carregar_ch_efetiva,
     casar_disciplinas,
@@ -20,7 +21,10 @@ from ch_efetiva import (
     resumo_por_carga,
 )
 from calendario import carregar_calendario, faixa_ch
-from core.manipulacao import processar_multiplos_bimestres
+from core.manipulacao import (
+    processar_multiplos_bimestres,
+    processar_multiplos_bimestres_transito_estradas,
+)
 from frequencia import frequencia_por_disciplina, resumo_frequencia_por_disciplina
 
 pytestmark = pytest.mark.skipif(
@@ -204,5 +208,31 @@ def test_frequencia_por_disciplina_mapa_real(df_real) -> None:
     # Frequência NaN nas 4 disciplinas sem horário: 45 × 4 = 180 pares
     pares_nan = int(df_freq[cols_disc].isna().sum().sum())
     assert pares_nan == 180, f"Esperado 180 pares NaN, obtido {pares_nan}"
+
+
+@pytest.mark.skipif(
+    not CAMINHO_TRANSITO_PADRAO.exists() or not CAMINHO_ESTRADAS_PADRAO.exists(),
+    reason="Mapa real Transito_2025-2026.xls ou Estradas_2025-2026.xls não encontrado em sandbox/dae/dados/.",
+)
+def test_casamento_mapa_real_transito(df_real) -> None:
+    """Verifica casamento do mapa real de Trânsito com a planilha de CH efetiva (D3)."""
+    conjuntos_tt, _ = processar_multiplos_bimestres_transito_estradas(
+        [CAMINHO_TRANSITO_PADRAO], [CAMINHO_ESTRADAS_PADRAO]
+    )
+    df_notas, df_faltas, legenda_real, meta = conjuntos_tt[0]
+    assert len(legenda_real) == 16
+
+    df_turma = ch_da_turma(df_real, "Trânsito", 2, meta["turma"])
+    casadas, sem_linha = casar_disciplinas(legenda_real, df_turma)
+
+    assert len(casadas) == 13
+    assert len(sem_linha) == 3
+
+    esperado_sem_linha = {
+        "PLANEJAMENTO DE TRANSPORTES",
+        "LABORATÓRIO DE SEGURANÇA VIÁRIA",
+        "EDUCAÇÃO FÍSICA - 2ª SÉRIE",
+    }
+    assert set(sem_linha) == esperado_sem_linha
 
 

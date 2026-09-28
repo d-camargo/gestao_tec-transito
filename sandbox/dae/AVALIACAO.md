@@ -263,3 +263,58 @@ No cruzamento da turma de Estradas 2ª série (turmas `EST-2A` e `EST/TT-2A`, co
   - Nas 13 disciplinas com CH real (585 pares aluno × disciplina avaliados), registraram-se **87 ocorrências** em que as faltas do aluno excederam o limite legal de 25% da carga horária lecionada no bimestre.
   - As 4 disciplinas sem horário geram valores `NaN` (180 pares indefinidos), não pontuando no cálculo de infrequência.
 
+---
+
+## 9. Conjunto DET
+
+### Agregados medidos do Departamento de Engenharia de Transportes
+Com a consolidação conjunta dos mapas reais de 2ª série do Ensino Médio Integrado de Estradas e Trânsito (`Estradas_2025-2026.xls` e `Transito_2025-2026.xls`) pela rotina oficial do app (`processar_multiplos_bimestres_transito_estradas`):
+
+- **Estudantes únicos (45 = 24 + 21):**
+  - Total consolidado do DET: **45 estudantes** (união por matrícula).
+  - Curso Técnico em Estradas: **24 estudantes**.
+  - Curso Técnico em Trânsito: **21 estudantes**.
+  - **Interseção:** **0 estudantes** (as 21 matrículas de Trânsito que constavam originalmente no mapa de Estradas foram migradas para Trânsito e expurgadas de Estradas).
+- **Faltas por curso e total no 1º Bimestre:**
+  - Curso Técnico em Estradas: **1.045 faltas**.
+  - Curso Técnico em Trânsito: **990 faltas** (incorporando as faltas das disciplinas comuns migradas de Estradas).
+  - Total geral DET: **2.035 faltas** (conservação aritmética exata dos mapas brutos: 1.887 de Estradas + 148 de Trânsito).
+- **Disciplinas por curso:**
+  - Curso Técnico em Estradas: **17 disciplinas** no mapa.
+  - Curso Técnico em Trânsito: **16 disciplinas** no mapa.
+- **Núcleo comum (10 disciplinas):**
+  - 10 disciplinas cursadas em conjunto pelos dois cursos (`BIOLOGIA`, `FILOSOFIA`, `FÍSICA`, `GEOGRAFIA`, `HISTÓRIA`, `INGLÊS`, `LÍNGUA PORTUGUESA`, `MATEMÁTICA`, `QUÍMICA`, `REDAÇÃO`).
+  - No resumo integrado de frequência, cada uma dessas 10 disciplinas totaliza **45 estudantes avaliados** (24 de Estradas + 21 de Trânsito).
+  - Divergência de carga horária entre os cursos no núcleo comum: **0**.
+- **Disciplinas casadas e sem horário por curso:**
+  - **Estradas:**
+    - Casadas com a grade horária: **13 disciplinas** (10 do núcleo comum + 3 técnicas: `MÁQUINAS E EQUIPAMENTOS`, `SOLOS`, `TOPOGRAFIA`).
+    - Sem horário na grade de salas teóricas: **4 disciplinas** (`EDUCAÇÃO FÍSICA - 2ª SÉRIE`, `LABORATÓRIO DE DESENHO TOPOGRÁFICO`, `LABORATÓRIO DE SOLOS`, `LABORATÓRIO DE TOPOGRAFIA`).
+  - **Trânsito:**
+    - Casadas com a grade horária: **13 disciplinas** (10 do núcleo comum + 3 técnicas: `INTRODUÇÃO À ENGENHARIA DE TRÁFEGO`, `L. DE PESQUISA DE TRANSPORTE E TRÂNSITO`, `L. DE TOPOGRAFIA URBANA`).
+    - Sem horário na grade de salas teóricas: **3 disciplinas** (`EDUCAÇÃO FÍSICA - 2ª SÉRIE`, `LABORATÓRIO DE SEGURANÇA VIÁRIA`, `PLANEJAMENTO DE TRANSPORTES`).
+- **Número agregado de pares aluno × disciplina abaixo de 75% no 1º BI:**
+  - Apurado na execução do passo 8 com base nos limites reais de carga horária lecionada: **89 pares** no total (contagem agregada).
+  - Distribuição: 81 pares nas 10 disciplinas do núcleo comum, 6 pares nas 3 técnicas de Estradas e 2 pares nas 3 técnicas de Trânsito.
+
+---
+
+## 10. Integração com o app — lacuna
+
+### Ausência de ponto de extensão em `criar_relatorio_pdf`
+A função principal de geração de relatórios do app ([`core.relatorios.criar_relatorio_pdf`](file:///home/diego/projects/gestao-tec-transito/core/relatorios.py)) opera atualmente de modo monolítico:
+- Recebe as estatísticas acadêmicas pré-processadas e renderiza sequencialmente os flowables das quatro seções oficiais no `SimpleDocTemplate` / `_DocComSumario`;
+- Não oferece nenhum parâmetro público, gancho de ciclo de vida ou lista de seções extras para injeção de novos blocos por submódulos.
+
+### Injeção por patch em API privada
+Para possibilitar a avaliação e homologação visual da seção DAE dentro do relatório completo sem modificar os arquivos principais do app (`core/` e `app.py`), o sandbox utilizou o context manager `injetar_secao_dae` ([`sandbox/dae/preview_relatorio.py`](file:///home/diego/projects/gestao-tec-transito/sandbox/dae/preview_relatorio.py)) via monkeypatch temporário com `unittest.mock.patch`:
+- A interceptação ocorre sobre o método privado `core.relatorios._DocComSumario.multiBuild`, inserindo os flowables da DAE ao final do documento como uma nova seção numerada no sumário executivo;
+- Embora atenda perfeitamente aos requisitos de homologação e prévia no sandbox, representa um acoplamento frágil com detalhes internos da implementação de `_DocComSumario`.
+
+### Proposta futura: `secoes_extras` (fora do escopo)
+A solução arquitetural recomendada a longo prazo consiste em introduzir um ponto de extensão explícito na assinatura pública de `criar_relatorio_pdf`:
+- Parâmetro opcional `secoes_extras: list[tuple[str, list[Flowable]]] | None = None`;
+- O construtor oficial do relatório integraria os blocos ao fluxo (`story`), administraria a quebra de página e incorporaria os títulos ao sumário de forma nativa e desacoplada.
+- Essa evolução permanece **estritamente fora do escopo do sandbox**, sujeita à decisão futura e priorização pelo Diego.
+
+

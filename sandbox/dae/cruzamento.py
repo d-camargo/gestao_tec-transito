@@ -45,6 +45,15 @@ try:
         carregar_dae,
     )
     from .ch_efetiva import PADRAO_CH_EFETIVA
+    from .det import (
+        CURSOS_DET,
+        ROTULO_DET,
+        carregar_det,
+        classificar_mapas,
+        conjuntos_det,
+        eh_det,
+        resumo_det,
+    )
     from .frequencia import MESES_POR_BIMESTRE, mes_referencia, meses_lancados
 except ImportError:
     from carregar import (
@@ -54,6 +63,15 @@ except ImportError:
         carregar_dae,
     )
     from ch_efetiva import PADRAO_CH_EFETIVA
+    from det import (
+        CURSOS_DET,
+        ROTULO_DET,
+        carregar_det,
+        classificar_mapas,
+        conjuntos_det,
+        eh_det,
+        resumo_det,
+    )
     from frequencia import MESES_POR_BIMESTRE, mes_referencia, meses_lancados
 
 from core.manipulacao import processar_multiplos_bimestres
@@ -98,6 +116,27 @@ def _consolidar_faltas_app(
         - pd.DataFrame com 'matricula' (normalizada) e 'faltas_bim_<n>'
         - lista de bimestres detectados
     """
+    # Caso 0: conjuntos_det do DET (ou tupla (conjuntos_tt, conjuntos_est))
+    if isinstance(df_faltas_app, conjuntos_det) or (
+        isinstance(df_faltas_app, (tuple, list))
+        and len(df_faltas_app) == 2
+        and isinstance(df_faltas_app[0], (tuple, list))
+        and isinstance(df_faltas_app[1], (tuple, list))
+        and (
+            not df_faltas_app[0]
+            or (isinstance(df_faltas_app[0][0], (tuple, list)) and len(df_faltas_app[0][0]) >= 4)
+        )
+    ):
+        conj_tt, conj_est = df_faltas_app[0], df_faltas_app[1]
+        df_tt, bim_tt = _consolidar_faltas_app(conj_tt, bimestres=bimestres)
+        df_est, bim_est = _consolidar_faltas_app(conj_est, bimestres=bimestres)
+
+        df_consolidado = pd.concat([df_tt, df_est], ignore_index=True)
+        if "matricula" in df_consolidado.columns:
+            df_consolidado = df_consolidado.drop_duplicates(subset=["matricula"])
+        bimestres_detectados = sorted(list(set(bim_tt) | set(bim_est)))
+        return df_consolidado, bimestres_detectados
+
     # Caso 1: Lista de conjuntos do processar_multiplos_bimestres ou lista de tuplas
     if isinstance(df_faltas_app, (list, tuple)) and df_faltas_app:
         primeiro = df_faltas_app[0]
@@ -404,19 +443,20 @@ def resumo_mapa(conjuntos: list) -> list[dict]:
 
 def contagem_pe_de_meia(
     df_dae: pd.DataFrame,
-    curso_contem: str | None = None,
+    curso_contem: str | Sequence[str] | tuple[str, ...] | None = None,
     matriculas: Sequence[str] | set[str] | pd.Series | None = None,
 ) -> dict[str, int]:
     """Contabiliza os discentes por situação do programa Pé-de-Meia (C11).
 
     Mantém as 4 chaves de ``carregar_dae`` (``elegivel``, ``nao_elegivel``,
     ``nada_consta``, ``indefinida``) mais ``total``, zeros incluídos.
-    ``curso_contem`` casa sem acento e sem caixa; ``matriculas`` restringe o
-    universo de discentes.
+    ``curso_contem`` casa sem acento e sem caixa (aceita str ou tupla para união);
+    ``matriculas`` restringe o universo de discentes.
 
     Args:
         df_dae: DataFrame com dados da DAE contendo a coluna 'pe_de_meia'.
-        curso_contem: Substring para filtrar a coluna 'curso' (ex.: 'estradas').
+        curso_contem: Substring ou tupla/sequência de substrings para filtrar a coluna 'curso'
+                      (ex.: 'estradas' ou ('estradas', 'transito')).
         matriculas: Matrículas que delimitam o universo (ex.: alunos do mapa).
 
     Returns:
@@ -424,8 +464,13 @@ def contagem_pe_de_meia(
     """
     df_filtrado = df_dae
     if curso_contem is not None and "curso" in df_filtrado.columns:
-        alvo = _normalizar_rotulo(curso_contem)
-        mask_curso = df_filtrado["curso"].apply(lambda c: alvo in _normalizar_rotulo(c))
+        if isinstance(curso_contem, str):
+            alvos = [_normalizar_rotulo(curso_contem)]
+        else:
+            alvos = [_normalizar_rotulo(x) for x in curso_contem]
+        mask_curso = df_filtrado["curso"].apply(
+            lambda c: any(alvo in _normalizar_rotulo(c) for alvo in alvos)
+        )
         df_filtrado = df_filtrado[mask_curso]
 
     if matriculas is not None and "matricula" in df_filtrado.columns:
@@ -522,8 +567,27 @@ def _executar_cli(argv: list[str] | None = None) -> int:
         print("Erro: Nenhum mapa de turma (.xls) fornecido ou encontrado em dados/.", file=sys.stderr)
         return 1
 
+    try:
+        mapas_classificados = classificar_mapas(caminhos_mapas)
+        eh_det_mapas = eh_det(mapas_classificados)
+    except Exception:
+        mapas_classificados = {}
+        eh_det_mapas = False
+
     # Modo só-mapa: mapas presentes, mas planilha da DAE ausente
     if not caminho_dae:
+        if eh_det_mapas:
+            det = carregar_det(mapas_classificados)
+            r_det = resumo_det(det)
+            est_n = r_det.alunos_por_curso.get("Estradas", 0)
+            tt_n = r_det.alunos_por_curso.get("Trânsito", 0)
+            print(
+                f"{ROTULO_DET}: {r_det.alunos_total} alunos / "
+                f"Estradas {est_n} / Trânsito {tt_n} / interseção {r_det.intersecao}"
+            )
+            print("PENDENTE: arquivo da DAE (.xlsx/.csv) ausente em sandbox/dae/dados/ — cruzamento não executado.")
+            return 0
+
         conjuntos = processar_multiplos_bimestres(caminhos_mapas)
         resumo = resumo_mapa(conjuntos)
         r0 = resumo[0]
@@ -540,21 +604,47 @@ def _executar_cli(argv: list[str] | None = None) -> int:
 
     # Cruzamento completo com DAE
     df_dae = carregar_dae(caminho_dae)
-    conjuntos = processar_multiplos_bimestres(caminhos_mapas)
-    resumo_mapa_lista = resumo_mapa(conjuntos)
-    r0 = resumo_mapa_lista[0]
-    df_unido, resumo = cruzar(df_dae, conjuntos)
-
-    print(f"Mapa de turma: {r0['n_alunos']} alunos / bimestre {r0['bimestre_num']} / {r0['n_disciplinas']} disciplinas")
+    if eh_det_mapas:
+        det = carregar_det(mapas_classificados)
+        r_det = resumo_det(det)
+        est_n = r_det.alunos_por_curso.get("Estradas", 0)
+        tt_n = r_det.alunos_por_curso.get("Trânsito", 0)
+        print(
+            f"{ROTULO_DET}: {r_det.alunos_total} alunos / "
+            f"Estradas {est_n} / Trânsito {tt_n} / interseção {r_det.intersecao}"
+        )
+        df_unido, resumo = cruzar(df_dae, conjuntos_det(det))
+        bimestres_presentes = r_det.bimestres if r_det.bimestres else [1]
+        curso_alvo = ("estradas", "transito")
+        mats_mapa = set()
+        for conj in det:
+            for _, df_f, _, _ in conj:
+                if "matricula" in df_f.columns:
+                    mats_mapa.update(df_f["matricula"].apply(_normalizar_matricula).dropna().unique())
+    else:
+        conjuntos = processar_multiplos_bimestres(caminhos_mapas)
+        resumo_mapa_lista = resumo_mapa(conjuntos)
+        r0 = resumo_mapa_lista[0]
+        df_unido, resumo = cruzar(df_dae, conjuntos)
+        print(f"Mapa de turma: {r0['n_alunos']} alunos / bimestre {r0['bimestre_num']} / {r0['n_disciplinas']} disciplinas")
+        bimestres_presentes = [
+            meta.get("bimestre_num") for _, _, _, meta in conjuntos if "bimestre_num" in meta
+        ]
+        if not bimestres_presentes:
+            bimestres_presentes = [1]
+        curso_alvo = None
+        for _, _, _, meta in conjuntos:
+            if isinstance(meta, dict):
+                curso_alvo = meta.get("curso_amigavel") or meta.get("curso")
+                if curso_alvo:
+                    break
+        mats_mapa = set()
+        for _, df_f, _, _ in conjuntos:
+            if "matricula" in df_f.columns:
+                mats_mapa.update(df_f["matricula"].apply(_normalizar_matricula).dropna().unique())
 
     ref = mes_referencia(df_dae)
     print(f"Mês de referência DAE: {ref or 'Não identificado'}")
-
-    bimestres_presentes = [
-        meta.get("bimestre_num") for _, _, _, meta in conjuntos if "bimestre_num" in meta
-    ]
-    if not bimestres_presentes:
-        bimestres_presentes = [1]
 
     todos_lancados = set(meses_lancados(df_dae))
     for b in sorted(bimestres_presentes):
@@ -584,23 +674,16 @@ def _executar_cli(argv: list[str] | None = None) -> int:
                 print(f"  Bimestre {b}: sem dados de estudantes casados para comparação.")
 
     # Recortes de Pé-de-Meia (C11)
-    curso_alvo = None
-    for _, _, _, meta in conjuntos:
-        if isinstance(meta, dict):
-            curso_alvo = meta.get("curso_amigavel") or meta.get("curso")
-            if curso_alvo:
-                break
-
     contagem_curso = contagem_pe_de_meia(df_dae, curso_contem=curso_alvo)
-
-    mats_mapa = set()
-    for _, df_f, _, _ in conjuntos:
-        if "matricula" in df_f.columns:
-            mats_mapa.update(df_f["matricula"].apply(_normalizar_matricula).dropna().unique())
-
     contagem_mapa = contagem_pe_de_meia(df_dae, matriculas=mats_mapa)
 
-    rotulo_curso = f" no Curso ({curso_alvo})" if curso_alvo else ""
+    if isinstance(curso_alvo, (tuple, list)):
+        rotulo_curso = f" no Curso ({' + '.join(CURSOS_DET)})"
+    elif curso_alvo:
+        rotulo_curso = f" no Curso ({curso_alvo})"
+    else:
+        rotulo_curso = ""
+
     print(f"\nRecorte Pé-de-Meia (DAE{rotulo_curso}):")
     print(f"  - Elegível: {contagem_curso['elegivel']}")
     print(f"  - Não elegível: {contagem_curso['nao_elegivel']}")

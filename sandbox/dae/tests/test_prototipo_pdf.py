@@ -22,18 +22,24 @@ for _p in (_DIR_DAE, _DIR_RAIZ):
 
 from carregar import carregar_dae
 from core.relatorios import COR_CABECALHO_TABELA, COR_TEXTO_CABECALHO_TABELA
+from det import carregar_det, conjuntos_det
 from prototipo_pdf import (
     LEGENDA_PROGRAMAS,
     NOTA_LGPD,
     NOTA_PE_DE_MEIA,
+    TEXTO_DEMONSTRACAO,
     TEXTO_RODAPE_USO_INTERNO,
     _executar_cli,
+    _largura,
     determinar_caminho_saida,
     extrair_texto_flowables,
     gerar_prototipo_pdf,
     montar_flowables,
     obter_dados_sinteticos,
 )
+from reportlab.lib.units import cm
+from reportlab.platypus import KeepTogether, Paragraph, Table
+from tests.conftest import mapa_sintetico
 
 
 def _obter_texto_teste(caminho_pdf: Path, flowables: list) -> str:
@@ -555,5 +561,363 @@ def test_executar_cli_com_ch_efetiva(planilha_ch_sintetica: Path, tmp_path: Path
     assert codigo == 0
     assert saida.exists()
     assert saida.read_bytes().startswith(b"%PDF")
+
+
+def test_prototipo_pdf_det_com_mapas_sinteticos_e_ch_efetiva(
+    planilha_ch_sintetica: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Valida protótipo PDF com mapas sintéticos EST+TT e planilha de CH efetiva.
+
+    - Bloco 'Cruzamento com o mapa de turma' mostra o resumo DET (total, por curso, interseção)
+      e Pé-de-Meia com a tupla, contendo 'Estradas + Trânsito'.
+    - Bloco 'CH efetiva por disciplina' usa resumo_frequencia_det com colunas de escopo:
+      'Núcleo comum', 'Trânsito' e 'Estradas'.
+    - Nota de sábados cita '23/05' para Estradas e Trânsito.
+    - Minimização de dados / LGPD: nenhuma matrícula ou nome discente dos mapas,
+      nem nome de professor fictício no texto extraído.
+    """
+    import core.manipulacao as manipulacao
+
+    original_ler = manipulacao._ler_xls_bruto
+
+    def _mock_ler(arquivo_xls):
+        if isinstance(arquivo_xls, pd.DataFrame):
+            return arquivo_xls
+        return original_ler(arquivo_xls)
+
+    monkeypatch.setattr(manipulacao, "_ler_xls_bruto", _mock_ler)
+
+    df_est = mapa_sintetico(
+        curso="TÉCNICO EM ESTRADAS",
+        bimestre=1,
+        turma="EST-2A",
+        disciplinas={
+            "ING": "LÍNGUA ESTRANGEIRA: INGLÊS - 2ª SÉRIE",
+            "TOP": "TOPOGRAFIA",
+            "SOL": "LABORATÓRIO DE SOLOS",
+        },
+        alunos=[
+            ("20260000001", "Aluno Compartilhado 1", {"ING": 15.0, "TOP": 12.0, "SOL": 12.0}, {"ING": 0, "TOP": 0, "SOL": 0}),
+            ("20260000002", "Aluno Compartilhado 2", {"ING": 14.0, "TOP": 13.0, "SOL": 13.0}, {"ING": 0, "TOP": 0, "SOL": 0}),
+            ("20260000003", "Aluno Estradas 3", {"ING": 16.0, "TOP": 14.0, "SOL": 14.0}, {"ING": 0, "TOP": 0, "SOL": 0}),
+            ("20260000004", "Aluno Estradas 4", {"ING": 17.0, "TOP": 15.0, "SOL": 15.0}, {"ING": 0, "TOP": 0, "SOL": 0}),
+        ],
+    )
+
+    df_tt = mapa_sintetico(
+        curso="TÉCNICO EM TRÂNSITO",
+        bimestre=1,
+        turma="TT-2A",
+        disciplinas={
+            "OPT": "OPERAÇÃO DE TRANSPORTES",
+            "TRA": "PLANEJAMENTO DE TRANSPORTES",
+        },
+        alunos=[
+            ("20260000001", "Aluno Compartilhado 1", {"OPT": 18.0, "TRA": 18.0}, {"OPT": 0, "TRA": 0}),
+            ("20260000002", "Aluno Compartilhado 2", {"OPT": 19.0, "TRA": 19.0}, {"OPT": 0, "TRA": 0}),
+        ],
+    )
+
+    det = carregar_det([df_est, df_tt])
+    df = obter_dados_sinteticos()
+
+    # 1. Teste passando conjuntos_det diretamente
+    flowables = montar_flowables(
+        df,
+        bimestres=[1],
+        curso="TÉCNICO EM ESTRADAS",
+        cruzamento=det,
+        ch_efetiva=planilha_ch_sintetica,
+    )
+    texto = extrair_texto_flowables(flowables, incluir_rodape=False)
+
+    assert "Estradas + Trânsito" in texto
+    assert "Núcleo comum" in texto
+    assert "Trânsito" in texto
+    assert "Estradas" in texto
+    assert "23/05" in texto
+
+    # Nenhuma matrícula dos mapas
+    for mat in ("20260000001", "20260000002", "20260000003", "20260000004"):
+        assert mat not in texto
+
+    # Nenhum nome discente dos mapas
+    for nome in ("Aluno Compartilhado", "Aluno Estradas 3", "Aluno Estradas 4"):
+        assert nome not in texto
+
+    # Nenhum nome de professor fictício
+    for prof in (
+        "Prof. Fictício Topografia",
+        "Prof. Fictício Ingles",
+        "Prof. Fictício Transportes",
+        "Prof. Fictício",
+    ):
+        assert prof not in texto
+
+    # 2. Teste passando dict de carregar_det
+    dict_det = {"Estradas": det.estradas, "Trânsito": det.transito}
+    flowables_dict = montar_flowables(
+        df,
+        bimestres=[1],
+        curso="TÉCNICO EM ESTRADAS",
+        cruzamento=dict_det,
+        ch_efetiva=planilha_ch_sintetica,
+    )
+    texto_dict = extrair_texto_flowables(flowables_dict, incluir_rodape=False)
+
+    assert "Estradas + Trânsito" in texto_dict
+    assert "Núcleo comum" in texto_dict
+    assert "Trânsito" in texto_dict
+    assert "Estradas" in texto_dict
+    assert "23/05" in texto_dict
+
+
+def test_executar_cli_det_dois_mapas(tmp_path: Path, planilha_ch_sintetica: Path, monkeypatch: pytest.MonkeyPatch):
+    """Testa CLI passando mapas dos dois cursos via --mapas montando o DET."""
+    import core.manipulacao as manipulacao
+
+    df_est = mapa_sintetico(
+        curso="TÉCNICO EM ESTRADAS",
+        bimestre=1,
+        turma="EST-2A",
+        disciplinas={"ING": "INGLÊS", "TOP": "TOPOGRAFIA"},
+        alunos=[("20260000001", "Aluno 1", {"ING": 15.0, "TOP": 12.0}, {"ING": 0, "TOP": 0})],
+    )
+    df_tt = mapa_sintetico(
+        curso="TÉCNICO EM TRÂNSITO",
+        bimestre=1,
+        turma="TT-2A",
+        disciplinas={"OPT": "OPERAÇÃO DE TRANSPORTES"},
+        alunos=[("20260000001", "Aluno 1", {"OPT": 18.0}, {"OPT": 0})],
+    )
+
+    original_ler = manipulacao._ler_xls_bruto
+
+    def _mock_ler(arquivo_xls):
+        if isinstance(arquivo_xls, pd.DataFrame):
+            return arquivo_xls
+        nome = Path(str(arquivo_xls)).name.lower()
+        if "est" in nome:
+            return df_est
+        if "tra" in nome or "tt" in nome:
+            return df_tt
+        return original_ler(arquivo_xls)
+
+    monkeypatch.setattr(manipulacao, "_ler_xls_bruto", _mock_ler)
+
+    mapa_est = tmp_path / "mock_est.xls"
+    mapa_tt = tmp_path / "mock_tt.xls"
+    mapa_est.touch()
+    mapa_tt.touch()
+
+    saida = tmp_path / "cli_det_out.pdf"
+    codigo = _executar_cli([
+        "--curso", "TÉCNICO EM ESTRADAS",
+        "--mapas", str(mapa_est), str(mapa_tt),
+        "--ch-efetiva", str(planilha_ch_sintetica),
+        "--saida", str(saida),
+    ])
+    assert codigo == 0
+    assert saida.exists()
+    assert saida.read_bytes().startswith(b"%PDF")
+
+
+def _extrair_todas_tabelas(flowables: list) -> list[Table]:
+    """Extrai recursivamente todos os objetos Table dos flowables."""
+    tabelas: list[Table] = []
+    for item in flowables:
+        if isinstance(item, Table):
+            tabelas.append(item)
+        elif isinstance(item, KeepTogether):
+            for sub in item._content:
+                if isinstance(sub, Table):
+                    tabelas.append(sub)
+    return tabelas
+
+
+def _extrair_todos_paragrafos(flowables: list) -> list[Paragraph]:
+    """Extrai recursivamente todos os objetos Paragraph dos flowables."""
+    paras: list[Paragraph] = []
+    for item in flowables:
+        if isinstance(item, Paragraph):
+            paras.append(item)
+        elif isinstance(item, Table):
+            for row in item._cellvalues:
+                for cell in row:
+                    if isinstance(cell, Paragraph):
+                        paras.append(cell)
+                    elif isinstance(cell, (list, tuple)):
+                        for sub in cell:
+                            if isinstance(sub, Paragraph):
+                                paras.append(sub)
+        elif isinstance(item, KeepTogether):
+            for sub in item._content:
+                if isinstance(sub, Paragraph):
+                    paras.append(sub)
+                elif isinstance(sub, Table):
+                    for row in sub._cellvalues:
+                        for cell in row:
+                            if isinstance(cell, Paragraph):
+                                paras.append(cell)
+                            elif isinstance(cell, (list, tuple)):
+                                for sub2 in cell:
+                                    if isinstance(sub2, Paragraph):
+                                        paras.append(sub2)
+    return paras
+
+
+def test_layout_invalido_gera_value_error():
+    """Valida que layout inválido levanta ValueError."""
+    df = obter_dados_sinteticos()
+    with pytest.raises(ValueError, match="Layout inválido"):
+        montar_flowables(df, layout="invalido")
+
+
+def test_layout_app_tabelas_largura_maxima_16cm(
+    planilha_ch_sintetica: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Com layout='app', todo Table tem soma de larguras ≤ 16 cm (D6)."""
+    import core.manipulacao as manipulacao
+
+    original_ler = manipulacao._ler_xls_bruto
+
+    def _mock_ler(arquivo_xls):
+        if isinstance(arquivo_xls, pd.DataFrame):
+            return arquivo_xls
+        return original_ler(arquivo_xls)
+
+    monkeypatch.setattr(manipulacao, "_ler_xls_bruto", _mock_ler)
+
+    df_est = mapa_sintetico(
+        curso="TÉCNICO EM ESTRADAS",
+        bimestre=1,
+        turma="EST-2A",
+        disciplinas={"ING": "INGLÊS", "TOP": "TOPOGRAFIA"},
+        alunos=[("20260000001", "Aluno 1", {"ING": 15.0, "TOP": 12.0}, {"ING": 0, "TOP": 0})],
+    )
+    df_tt = mapa_sintetico(
+        curso="TÉCNICO EM TRÂNSITO",
+        bimestre=1,
+        turma="TT-2A",
+        disciplinas={"OPT": "OPERAÇÃO DE TRANSPORTES"},
+        alunos=[("20260000001", "Aluno 1", {"OPT": 18.0}, {"OPT": 0})],
+    )
+    det = carregar_det([df_est, df_tt])
+    df = obter_dados_sinteticos()
+
+    # 1. Caso com DET e planilha CH (gera todas as tabelas possíveis)
+    flowables = montar_flowables(
+        df,
+        bimestres=[1, 2],
+        curso="TÉCNICO EM ESTRADAS",
+        cruzamento=det,
+        ch_efetiva=planilha_ch_sintetica,
+        layout="app",
+    )
+    tabelas = _extrair_todas_tabelas(flowables)
+    assert len(tabelas) >= 5, "Deve conter múltiplas tabelas"
+    for t in tabelas:
+        soma_cm = sum(t._colWidths) / cm
+        assert soma_cm <= 16.0 + 1e-4, f"Tabela excede 16 cm: {soma_cm:.4f} cm"
+
+    # 2. Caso sem cruzamento e sem CH
+    flowables_simples = montar_flowables(
+        df,
+        bimestres=[1],
+        layout="app",
+    )
+    tabelas_simples = _extrair_todas_tabelas(flowables_simples)
+    assert len(tabelas_simples) >= 3
+    for t in tabelas_simples:
+        soma_cm = sum(t._colWidths) / cm
+        assert soma_cm <= 16.0 + 1e-4, f"Tabela excede 16 cm: {soma_cm:.4f} cm"
+
+
+def test_layout_app_titulos_h2_sumario_sem_numero_proprio():
+    """Com layout='app', existe ao menos um Paragraph com style.name == 'H2Sumario'
+    e nenhum texto de título começa com dígito + ponto (D6).
+    """
+    df = obter_dados_sinteticos()
+    flowables = montar_flowables(df, layout="app")
+
+    h2_paras = [
+        p for p in flowables
+        if isinstance(p, Paragraph) and getattr(p.style, "name", None) == "H2Sumario"
+    ]
+    assert len(h2_paras) >= 1, "Deve existir ao menos um Paragraph com style.name == 'H2Sumario'"
+
+    for p in h2_paras:
+        texto = p.getPlainText().strip()
+        assert not re.match(r"^\d+\.", texto), f"Título começa com dígito + ponto: '{texto}'"
+        assert not re.match(r"^<b>\d+\.", p.text.strip()), f"Texto bruto começa com dígito + ponto: '{p.text}'"
+
+
+def test_layout_app_nenhum_estilo_com_fonte_helvetica():
+    """Com layout='app', nenhum estilo usa fonte Helvetica* (D6: Times)."""
+    df = obter_dados_sinteticos()
+    flowables = montar_flowables(df, layout="app")
+
+    paras = _extrair_todos_paragrafos(flowables)
+    assert len(paras) > 0, "Deve haver parágrafos gerados"
+
+    for p in paras:
+        font = p.style.fontName
+        assert not font.lower().startswith("helvetica"), (
+            f"Estilo '{p.style.name}' usa fonte '{font}', que começa com Helvetica"
+        )
+
+
+def test_demonstracao_e_ficticios_com_dae_sintetica_e_ausentes_com_dae_real(
+    caminho_xlsx: Path,
+):
+    """'DEMONSTRAÇÃO' e 'FICTÍCIOS' presentes com DAE sintética e ausentes com
+    o .xlsx sintético de teste carregado como DAE real (D8).
+    Com DAE sintética e layout='app', o primeiro flowable é o quadro 'DEMONSTRAÇÃO'.
+    """
+    # 1. Com DAE sintética
+    df_sint = obter_dados_sinteticos()
+    flowables_sint = montar_flowables(df_sint, layout="app")
+    texto_sint = extrair_texto_flowables(flowables_sint, incluir_rodape=False)
+
+    assert "DEMONSTRAÇÃO" in texto_sint
+    assert "FICTÍCIOS" in texto_sint
+
+    # O primeiro flowable deve ser o quadro "DEMONSTRAÇÃO" de D8 (texto literal de D8)
+    primeiro = flowables_sint[0]
+    assert isinstance(primeiro, Table), f"Primeiro flowable deve ser Table, mas é {type(primeiro)}"
+    texto_primeiro = extrair_texto_flowables([primeiro], incluir_rodape=False)
+    assert "DEMONSTRAÇÃO" in texto_primeiro
+    assert "FICTÍCIOS" in texto_primeiro
+    assert TEXTO_DEMONSTRACAO in texto_primeiro
+
+    # 2. Com o .xlsx sintético de teste carregado como DAE real
+    df_real = carregar_dae(caminho_xlsx)
+    flowables_real = montar_flowables(df_real, layout="app")
+    texto_real = extrair_texto_flowables(flowables_real, incluir_rodape=False)
+
+    assert "DEMONSTRAÇÃO" not in texto_real
+    assert "FICTÍCIOS" not in texto_real
+
+    # O primeiro flowable NÃO deve ser o quadro DEMONSTRAÇÃO
+    primeiro_real = flowables_real[0]
+    assert isinstance(primeiro_real, Paragraph)
+    assert getattr(primeiro_real.style, "name", None) == "H2Sumario"
+
+
+def test_helper_largura_unitario():
+    """Testa o helper _largura diretamente."""
+    # Escala para 16 cm quando layout='app'
+    assert _largura(17.5 * cm, layout="app") == pytest.approx(16.0 * cm)
+    assert _largura(17.5 * cm, layout="prototipo") == pytest.approx(17.5 * cm)
+
+    # Lista de larguras somando 17.5 cm escala para somar 16.0 cm
+    cols = [7.5 * cm, 5.0 * cm, 5.0 * cm]
+    cols_app = _largura(cols, layout="app")
+    assert sum(cols_app) == pytest.approx(16.0 * cm)
+
+    cols_proto = _largura(cols, layout="prototipo")
+    assert sum(cols_proto) == pytest.approx(17.5 * cm)
+
+
 
 

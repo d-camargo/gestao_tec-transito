@@ -169,6 +169,7 @@ DIAS_UTEIS: tuple[str, ...] = ("SEG", "TER", "QUA", "QUI", "SEX")
 PASTA_DADOS: Path = Path(__file__).resolve().parent / "dados"
 CAMINHO_CH_EFETIVA_PADRAO: Path = PASTA_DADOS / "CH_Efetiva_Disciplinas_Integrado_2026.xlsx"
 CAMINHO_ESTRADAS_PADRAO: Path = PASTA_DADOS / "Estradas_2025-2026.xls"
+CAMINHO_TRANSITO_PADRAO: Path = PASTA_DADOS / "Transito_2025-2026.xls"
 
 
 def remover_acentos(txt: str) -> str:
@@ -741,6 +742,16 @@ def ch_da_turma(
     return df[mask].reset_index(drop=True)
 
 
+ALIASES_DISCIPLINA: dict[str, str] = {
+    "LABORATORIO DE DE PESQUISA DE TRANSPORTES E TRANSITO": "L. DE PESQUISA DE TRANSPORTE E TRANSITO",
+    "LABORATORIO DE TOPOGRAFIA URBANA": "L. DE TOPOGRAFIA URBANA",
+}
+"""Mapeamento explícito de aliases de disciplinas entre o mapa de turma e a planilha de CH efetiva (D3).
+
+Cada entrada é chave normalizada do mapa → nome normalizado da planilha, sem casamento aproximado.
+"""
+
+
 def casar_disciplinas(
     legenda: dict[str, str],
     df_turma: pd.DataFrame,
@@ -777,6 +788,7 @@ def casar_disciplinas(
 
     for cod, nome_mapa in legenda.items():
         norm_mapa = normalizar_disciplina(nome_mapa)
+        norm_mapa = ALIASES_DISCIPLINA.get(norm_mapa, norm_mapa)
         matches = df_norm[normas == norm_mapa]
         if matches.empty:
             sem_linha.append(nome_mapa)

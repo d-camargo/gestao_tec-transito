@@ -13,6 +13,7 @@ import pytest
 
 from ch_efetiva import (
     ABA_CH_DISCIPLINA,
+    ALIASES_DISCIPLINA,
     COLUNAS_CH_EFETIVA,
     PADRAO_TURMA,
     carregar_ch_efetiva,
@@ -436,4 +437,90 @@ def test_casar_disciplinas_legenda_ficticia(planilha_ch_sintetica: Path) -> None
     assert c2_mut["ch_efetiva"] == 68
     assert c2_mut["ch_bim_1"] == 18
     assert c2_mut["arranjo"] == {"SEX": 2}
+
+
+def test_aliases_disciplina_constante() -> None:
+    """Verifica a constante ALIASES_DISCIPLINA (D3) e suas entradas determinísticas."""
+    assert len(ALIASES_DISCIPLINA) == 2
+    assert (
+        ALIASES_DISCIPLINA["LABORATORIO DE DE PESQUISA DE TRANSPORTES E TRANSITO"]
+        == "L. DE PESQUISA DE TRANSPORTE E TRANSITO"
+    )
+    assert (
+        ALIASES_DISCIPLINA["LABORATORIO DE TOPOGRAFIA URBANA"]
+        == "L. DE TOPOGRAFIA URBANA"
+    )
+
+
+def test_casar_disciplinas_aliases_e_laboratorio_solos(planilha_ch_sintetica: Path) -> None:
+    """Verifica que alias de D3 casa com linha fictícia e LABORATÓRIO DE SOLOS não casa com SOLOS."""
+    df_base = carregar_ch_efetiva(planilha_ch_sintetica)
+    linha_pesquisa = {
+        "curso": "Trânsito",
+        "turma": "TT-2A",
+        "serie": 2,
+        "letra": "A",
+        "subgrupo": "",
+        "sigla": "LPTT",
+        "disciplina": "L. DE PESQUISA DE TRANSPORTE E TRÂNSITO",
+        "disciplina_norm": normalizar_disciplina("L. DE PESQUISA DE TRANSPORTE E TRÂNSITO"),
+        "seg": 2,
+        "ter": 0,
+        "qua": 0,
+        "qui": 0,
+        "sex": 0,
+        "aulas_sem": 2,
+        "ch_nominal": 80,
+        "ch_bim_1": 20,
+        "ch_bim_2": 20,
+        "ch_bim_3": 16,
+        "ch_bim_4": 14,
+        "ch_efetiva": 70,
+    }
+    linha_solos = {
+        "curso": "Trânsito",
+        "turma": "TT-2A",
+        "serie": 2,
+        "letra": "A",
+        "subgrupo": "",
+        "sigla": "SOL",
+        "disciplina": "SOLOS",
+        "disciplina_norm": normalizar_disciplina("SOLOS"),
+        "seg": 0,
+        "ter": 2,
+        "qua": 0,
+        "qui": 0,
+        "sex": 0,
+        "aulas_sem": 2,
+        "ch_nominal": 80,
+        "ch_bim_1": 20,
+        "ch_bim_2": 20,
+        "ch_bim_3": 18,
+        "ch_bim_4": 18,
+        "ch_efetiva": 76,
+    }
+    df_expandido = pd.concat(
+        [df_base, pd.DataFrame([linha_pesquisa, linha_solos])], ignore_index=True
+    )
+    df_turma = ch_da_turma(
+        df_expandido, "Trânsito", 2, "TÉCNICO EM TRÂNSITO - BH-1TRANS - A (2025)"
+    )
+
+    # 1. casar_disciplinas({"X": "LABORATÓRIO DE DE PESQUISA DE TRANSPORTES E TRÂNSITO"}, df)
+    #    casa com a linha fictícia L. DE PESQUISA DE TRANSPORTE E TRÂNSITO
+    casadas, sem_linha = casar_disciplinas(
+        {"X": "LABORATÓRIO DE DE PESQUISA DE TRANSPORTES E TRÂNSITO"},
+        df_turma,
+    )
+    assert "X" in casadas
+    assert casadas["X"]["disciplina"] == "L. DE PESQUISA DE TRANSPORTE E TRÂNSITO"
+    assert sem_linha == []
+
+    # 2. LABORATÓRIO DE SOLOS continua sem casar com SOLOS
+    casadas_solos, sem_linha_solos = casar_disciplinas(
+        {"Y": "LABORATÓRIO DE SOLOS"},
+        df_turma,
+    )
+    assert "Y" not in casadas_solos
+    assert "LABORATÓRIO DE SOLOS" in sem_linha_solos
 

@@ -196,3 +196,76 @@ Caso haja alterações de horário ou alocação de novas turmas:
 2. Ao rodar os scripts ou a suíte de testes, o sandbox relê a planilha e valida sua integridade aritmética e estrutural.
 3. O módulo cruza as informações com o calendário oficial (`sandbox/dae/calendario/Calendario_Escolar_2026_EPTNM_Integrado_BH.md`) via `divergencias_calendario()`, acusando qualquer divergência entre os dias letivos da planilha e as definições do `.md`.
 
+---
+
+## 8. Estradas + Trânsito (DET)
+
+### União por matrícula, não soma
+O Departamento de Engenharia de Transportes (DET) congrega os cursos técnicos em **Estradas** e **Trânsito**. No Ensino Médio Integrado, as turmas desses dois cursos compartilham estudantes nas disciplinas do núcleo comum da Base Nacional Comum Curricular (BNCC). Por essa razão, a apuração do conjunto discente do departamento é realizada estritamente pela **união dos estudantes únicos por matrícula**, e **não pela soma aritmética simples** dos mapas brutos (o que geraria dupla contagem indevida de estudantes).
+
+### Fonte autoritativa do app
+A consolidação discente utiliza diretamente a função de negócio oficial do app:
+[`core.manipulacao.processar_multiplos_bimestres_transito_estradas`](file:///home/diego/projects/gestao-tec-transito/core/manipulacao.py).
+Essa função autoritativa:
+1. Identifica os discentes de Trânsito matriculados no mapa de turmas de Estradas;
+2. Transfere suas notas e faltas das disciplinas do núcleo comum para a estrutura de Trânsito;
+3. Remove essas matrículas da relação de Estradas.
+Dessa forma, os conjuntos finais de Estradas e Trânsito resultam com **interseção estritamente nula** (`intersecao = 0`), eliminando qualquer duplicidade e mantendo conformidade integral com a lógica do app.
+
+### Descoberta automática
+Os utilitários de integração do DET possuem descoberta automática dos arquivos situados em `sandbox/dae/dados/`:
+- `classificar_mapas()`: inspeciona todos os mapas `.xls` na pasta e os agrupa de acordo com o atributo `curso_amigavel` dos metadados extraídos do cabeçalho;
+- `eh_det()`: valida se o conjunto de mapas representa estritamente o DET (presença simultânea de mapas de Estradas e de Trânsito);
+- Os pontos de entrada (`det.carregar_det()`, `preview_relatorio.gerar_previa()` e `cruzamento.py`) ativam a descoberta automática quando executados sem argumentos de caminhos, localizando os mapas oficiais em `dados/`.
+
+### Aliases de disciplina e como acrescentar um
+Eventuais divergências entre a nomenclatura de disciplinas adotada no mapa de turma (.xls) e na grade de horários da carga horária efetiva (.xlsx) são tratadas pelo dicionário determinístico `ALIASES_DISCIPLINA` em [`sandbox/dae/ch_efetiva.py`](file:///home/diego/projects/gestao-tec-transito/sandbox/dae/ch_efetiva.py). O casamento entre legendas opera por comparação exata após normalização, sem emprego de algoritmos probabilísticos ou busca aproximada.
+
+Para acrescentar um novo alias de disciplina:
+1. Abra o arquivo [`sandbox/dae/ch_efetiva.py`](file:///home/diego/projects/gestao-tec-transito/sandbox/dae/ch_efetiva.py);
+2. Localize a definição de `ALIASES_DISCIPLINA`;
+3. Adicione uma nova entrada mapeando a versão normalizada do mapa para a versão normalizada da planilha (ambas em letras maiúsculas, sem acentuação e sem pontuação excedente, conforme padronizado por `normalizar_disciplina()`):
+   ```python
+   ALIASES_DISCIPLINA: dict[str, str] = {
+       "LABORATORIO DE DE PESQUISA DE TRANSPORTES E TRANSITO": "L. DE PESQUISA DE TRANSPORTE E TRANSITO",
+       "LABORATORIO DE TOPOGRAFIA URBANA": "L. DE TOPOGRAFIA URBANA",
+       "NOVA DENOMINACAO NO MAPA": "DENOMINACAO NA PLANILHA",
+   }
+   ```
+4. Execute os testes (`.venv/bin/python3 -m pytest -q sandbox/dae/tests/test_ch_efetiva.py`) para confirmar o casamento determinístico.
+
+---
+
+## 9. Prévia do relatório do app com a seção DAE
+
+### Comando e localização de saída
+Para gerar a prévia do relatório do app integrada com a seção da DAE:
+```bash
+.venv/bin/python sandbox/dae/preview_relatorio.py
+```
+Opções disponíveis via CLI:
+- `--mapas`: lista de arquivos de mapas de turma (padrão: descoberta automática em `dados/`).
+- `--dae`: arquivo da DAE a utilizar (padrão: base sintética de demonstração).
+- `--ch-efetiva`: caminho da planilha de carga horária efetiva.
+- `--saida`: pasta de destino dos PDFs gerados.
+- `--cenario`: cenário de apuração (`A` ou `REAL`, padrão: `A`).
+- `--sabado-reproduz`: dia útil reproduzido no Cenário REAL (`SEG` a `SEX`).
+
+Os relatórios são salvos em `sandbox/dae/saida/preview/` utilizando a nomenclatura padrão do app:
+- `sandbox/dae/saida/preview/relatorio_trânsito_2aserie_bim1_previa_dae.pdf`
+- `sandbox/dae/saida/preview/relatorio_estradas_2aserie_bim1_previa_dae.pdf`
+
+### Gerador do app como biblioteca por mock.patch
+O script [`sandbox/dae/preview_relatorio.py`](file:///home/diego/projects/gestao-tec-transito/sandbox/dae/preview_relatorio.py) consome o gerador de relatórios do app (`core.relatorios.criar_relatorio_pdf`) como uma biblioteca externa, sem alterar o código-fonte de produção em `core/` ou `app.py`. A injeção da seção DAE é executada através de um monkeypatch temporário com `unittest.mock.patch` sobre o método `core.relatorios._DocComSumario.multiBuild`. O patch intercepta o fluxo de construção (`story`), anexa os flowables da DAE como uma nova seção numerada no sumário executivo e restaura o estado original da classe imediatamente ao término do context manager `injetar_secao_dae`.
+
+### Faixa de prévia
+Todas as páginas dos documentos gerados trazem no rodapé uma faixa discreta (fundo rosado claro, texto pequeno em Times-Roman vermelho-escuro) com os dizeres `"PRÉVIA gerada no sandbox/dae — não é relatório oficial. A seção DAE usa dados fictícios de demonstração (export da DAE pendente)."`, desenhada no canvas do ReportLab pelo hook `onPage`. Essa marcação visual evidencia o caráter não oficial do arquivo e o uso de dados fictícios na seção DAE enquanto o export da DAE não chega.
+
+### Dados fictícios de demonstração
+Na ausência de um arquivo real da DAE, a rotina recorre à base fictícia gerada por `prototipo_pdf.obter_dados_sinteticos()`. Nesses casos, o documento inclui no início da seção DAE o quadro de aviso `"DEMONSTRAÇÃO"` e o selo `"DADOS SINTÉTICOS / FICTÍCIOS"`. Essas informações simuladas têm finalidade puramente ilustrativa de layout e nunca são vinculadas a alunos reais.
+
+### Uso interno restrito e proteção de dados
+> **Atenção — O PDF é interno — contém nomes reais de alunos na parte do app; enviar só ao Diego, nunca em canal público.**
+> Como a prévia invoca o pipeline oficial do app processando os mapas de turma reais de 2ª série, os relatórios contêm dados pessoais reais de estudantes (nomes e notas nas seções acadêmicas 1 a 4). Em conformidade com a LGPD e as normas institucionais, o arquivo gerado destina-se única e exclusivamente ao uso interno e restrito da coordenação. É expressamente vedado o envio ou compartilhamento em canais públicos ou grupos abertos.
+
+
