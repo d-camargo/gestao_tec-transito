@@ -317,4 +317,14 @@ A solução arquitetural recomendada a longo prazo consiste em introduzir um pon
 - O construtor oficial do relatório integraria os blocos ao fluxo (`story`), administraria a quebra de página e incorporaria os títulos ao sumário de forma nativa e desacoplada.
 - Essa evolução permanece **estritamente fora do escopo do sandbox**, sujeita à decisão futura e priorização pelo Diego.
 
+### Substituição da análise estatística de faltas (não somar) e gatilho natural
+A integração futura com o app deve **substituir** a análise de faltas por sinal estatístico e **não somar** uma segunda análise ao relatório:
+- Para evitar duplicidade de critérios e confusão na leitura, o relatório deve conter **uma única** análise de frequência: a da DAE, baseada na apuração por carga horária efetiva e no limite legal de 25% de infrequência.
+- A substituição abrange a retirada de:
+  - Subseções 2.3 ("Alunos com Faltas Acima da Média") e 2.4 ("Resumo de Faltas por Disciplina");
+  - 3 gráficos de faltas (`faltas_total_aluno`, `faltas_boxplot_disciplina` e `dispersao_notas_faltas`);
+  - 4 linhas da tabela de Estatísticas Gerais (Média de Faltas por Aluno, Mediana de Faltas, P90 de Faltas e Total de Faltas da Turma);
+  - 3 verbetes do Glossário ("μ + 2σ", "Quadrantes de Notas × Faltas" e "Acima da média de faltas").
+- O app já dispõe do **gatilho natural** para essa substituição: o parâmetro booleano `faltas_disponiveis` no dicionário de estatísticas passado para [`core.relatorios.criar_relatorio_pdf`](file:///home/diego/projects/gestao-tec-transito/core/relatorios.py). Quando `faltas_disponiveis=False`, a lógica interna do gerador do app já suprime de forma nativa e automática as subseções 2.3 e 2.4 e as 4 linhas da tabela de Estatísticas Gerais (preservando a coluna de faltas na tabela 2.1 e o cálculo do IDA). Caberá à integração futura estender esse comportamento para também descartar os 3 gráficos e os 3 verbetes do glossário sem necessidade de interceptação por mock.
+
 

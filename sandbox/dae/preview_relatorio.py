@@ -11,6 +11,15 @@ carrega o risco de acoplar a extensão a detalhes de implementação da API priv
 (`_DocComSumario`). No futuro, se a arquitetura D5 de `secoes_extras` for
 implementada nativamente no app, este módulo será descontinuado (essa integração
 nativa está fora do escopo atual).
+
+Na prévia gerada por este módulo, a análise de frequência da DAE por carga
+horária efetiva substitui a análise estatística de faltas do app original (uma
+análise de faltas só, evitando redundância). A remoção ocorre na entrada dos dados
+via `estatisticas_sem_analise_faltas` e `figuras_sem_analise_faltas` (D2),
+preservando dados brutos e indicadores compostos como a coluna de faltas em 2.1
+e o IDA (D1). No wrapper de `multiBuild` (D3), os verbetes de faltas retirados
+são filtrados do glossário, um apontamento para o capítulo DAE é inserido antes
+de Visualizações Gráficas e uma nota explicativa é adicionada após o H1 da DAE (D4).
 """
 
 from __future__ import annotations
@@ -25,10 +34,11 @@ from unittest import mock
 import copy
 import re
 
+import matplotlib.pyplot as plt
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib import colors
 from reportlab.lib.units import cm
-from reportlab.platypus import NextPageTemplate, PageBreak, Paragraph
+from reportlab.platypus import NextPageTemplate, PageBreak, Paragraph, Table, TableStyle
 
 # Assegura o path do projeto e do sandbox
 _DIR_DAE = Path(__file__).resolve().parent
@@ -52,6 +62,54 @@ TEXTO_FAIXA_PREVIA = (
 
 _LOGO_PADRAO = _DIR_RAIZ / "assets" / "logo_cefet.png" 
 
+# Termos do glossário referentes à análise de faltas por sinal estatístico do app (D3).
+TERMOS_GLOSSARIO_FALTAS = (
+    "μ + 2σ",
+    "Quadrantes de Notas × Faltas",
+    "Acima da média de faltas",
+)
+
+# Textos literais do plano para substituição da análise de faltas (D4).
+APONTAMENTO_FREQUENCIA = (
+    "A análise de frequência desta turma está no capítulo {n} "
+    "(Acompanhamento Discente — DAE), calculada sobre a carga horária efetiva de cada "
+    "disciplina."
+)
+
+NOTA_SUBSTITUICAO_FALTAS = (
+    "Nesta prévia, este capítulo é a única análise de frequência do relatório: "
+    "ele substitui a análise de faltas por sinal estatístico (média, P90 e μ+2σ da turma) "
+    "do relatório atual, que foi retirada para não haver duas análises de faltas."
+)
+
+# Chaves das figuras geradas por gerar_todos_graficos referentes à análise
+# estatística de faltas do app original (D2).
+CHAVES_FIGURAS_FALTAS = (
+    "faltas_total_aluno",
+    "faltas_boxplot_disciplina",
+    "dispersao_notas_faltas",
+)
+
+
+def estatisticas_sem_analise_faltas(estat: dict[str, Any]) -> dict[str, Any]:
+    """Retorna cópia das estatísticas com faltas_disponiveis=False (D2), sem mutar o original."""
+    copia = estat.copy()
+    copia["faltas_disponiveis"] = False
+    return copia
+
+
+def figuras_sem_analise_faltas(figuras: dict[str, Any]) -> dict[str, Any]:
+    """Retorna cópia do dicionário sem as 3 figuras de faltas (D2), fechando-as com plt.close."""
+    copia = {}
+    for chave, fig in figuras.items():
+        if chave in CHAVES_FIGURAS_FALTAS:
+            if fig is not None:
+                plt.close(fig)
+        else:
+            copia[chave] = fig
+    return copia
+
+
 def _slug(texto: str | None) -> str:
     """Gera slug mantendo letras acentuadas, replicando a lógica de app.py."""
     return re.sub(r"\W+", "_", (texto or "curso").strip().lower()).strip("_") or "curso"
@@ -70,37 +128,130 @@ def _fmt_bimestres(bimestres: list[Any]) -> str:
 
 
 @contextmanager
-def injetar_secao_dae(flowables_dae: list[Any], registro: list[Any] | None = None):
+def injetar_secao_dae(
+    flowables_dae: list[Any],
+    registro: list[Any] | None = None,
+    registro_story: list[Any] | None = None,
+):
     """Context manager que injeta flowables da DAE ao final do relatório PDF."""
     original_multiBuild = _DocComSumario.multiBuild
 
     def patched_multiBuild(self, story, **kwargs):
-        # 1. Encontra a numeração do último H1
+        # 1. Filtro do glossário (D3)
+        idx_h1_glossario = None
+        for i, f in enumerate(story):
+            if (
+                isinstance(f, Paragraph)
+                and getattr(f, "style", None)
+                and getattr(f.style, "name", None) == "H1Sumario"
+                and f.getPlainText().strip().endswith("Glossário")
+            ):
+                idx_h1_glossario = i
+                break
+
+        if idx_h1_glossario is None:
+            raise RuntimeError("O app mudou: H1Sumario de Glossário não foi encontrado no story.")
+
+        idx_tabela_gloss = None
+        for i in range(idx_h1_glossario + 1, len(story)):
+            if isinstance(story[i], Table):
+                idx_tabela_gloss = i
+                break
+
+        if idx_tabela_gloss is None:
+            raise RuntimeError("O app mudou: Tabela do glossário não foi encontrada após o H1Sumario de Glossário.")
+
+        tabela_orig = story[idx_tabela_gloss]
+        novas_linhas = []
+        termos_encontrados = set()
+        for row in getattr(tabela_orig, "_cellvalues", []):
+            cell = row[0]
+            while isinstance(cell, (list, tuple)) and len(cell) > 0:
+                cell = cell[0]
+            termo = cell.getPlainText().strip() if hasattr(cell, "getPlainText") else str(cell).strip()
+            if termo in TERMOS_GLOSSARIO_FALTAS:
+                termos_encontrados.add(termo)
+            else:
+                novas_linhas.append(row)
+
+        if len(termos_encontrados) != len(TERMOS_GLOSSARIO_FALTAS):
+            faltantes = set(TERMOS_GLOSSARIO_FALTAS) - termos_encontrados
+            raise RuntimeError(f"O app mudou: termos do glossário não encontrados: {faltantes}")
+
+        nova_tabela = Table(novas_linhas, colWidths=getattr(tabela_orig, "_colWidths", None))
+        # TableStyle replicado literalmente de core/relatorios.py:1858-1864
+        nova_tabela.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#eef1f7')),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        story[idx_tabela_gloss] = nova_tabela
+
+        # 2. Encontra a numeração do último H1
         max_h1 = 0
         for f in story:
-            if isinstance(f, Paragraph) and f.style.name == 'H1Sumario':
+            if isinstance(f, Paragraph) and getattr(f, "style", None) and getattr(f.style, "name", None) == 'H1Sumario':
                 texto = f.getPlainText()
                 partes = texto.split(".")
                 if partes and partes[0].isdigit():
                     max_h1 = max(max_h1, int(partes[0]))
-        
+
         n_secao = max_h1 + 1
         titulo_secao = f"{n_secao}. Acompanhamento Discente — DAE (Estradas + Trânsito)"
-        
-        # 2. Registra e adiciona H1 ao story
-        style_h1 = ParagraphStyle("H1Sumario", parent=getSampleStyleSheet()["h1"], fontName="Times-Bold", textColor=colors.HexColor("#002060"), spaceBefore=12, spaceAfter=8)
+
+        # 3. Apontamento de frequência antes do H2 "Visualizações Gráficas" (D4)
+        idx_h2_graficos = None
+        for i, f in enumerate(story):
+            if (
+                isinstance(f, Paragraph)
+                and getattr(f, "style", None)
+                and getattr(f.style, "name", None) == "H2Sumario"
+                and f.getPlainText().strip().endswith("Visualizações Gráficas")
+            ):
+                idx_h2_graficos = i
+                break
+
+        if idx_h2_graficos is None:
+            raise RuntimeError("O app mudou: H2Sumario de Visualizações Gráficas não foi encontrado no story.")
+
+        style_corpo = ParagraphStyle(
+            "CorpoPrevia",
+            parent=getSampleStyleSheet()["Normal"],
+            fontName="Times-Roman",
+            fontSize=10,
+            leading=14,
+            spaceBefore=4,
+            spaceAfter=6,
+        )
+        p_apontamento = Paragraph(APONTAMENTO_FREQUENCIA.format(n=n_secao), style_corpo)
+        story.insert(idx_h2_graficos, p_apontamento)
+
+        # 4. Registra e adiciona H1 e nota explicativa da DAE ao story (D4)
+        style_h1 = ParagraphStyle(
+            "H1Sumario",
+            parent=getSampleStyleSheet()["h1"],
+            fontName="Times-Bold",
+            textColor=colors.HexColor("#002060"),
+            spaceBefore=12,
+            spaceAfter=8,
+        )
         novo_h1 = Paragraph(titulo_secao, style_h1)
+        p_nota = Paragraph(NOTA_SUBSTITUICAO_FALTAS, style_corpo)
         if registro is not None:
             registro.append(novo_h1)
-        
+            registro.append(p_nota)
+
         story.append(NextPageTemplate("principal"))
         story.append(PageBreak())
         story.append(novo_h1)
-        
-        # 3. Renumera os H2 e adiciona os flowables
+        story.append(p_nota)
+
+        # 5. Renumera os H2 e adiciona os flowables da DAE
         h2_count = 1
         for f in flowables_dae:
-            if isinstance(f, Paragraph) and f.style.name == 'H2Sumario':
+            if isinstance(f, Paragraph) and getattr(f, "style", None) and getattr(f.style, "name", None) == 'H2Sumario':
                 novo_p = Paragraph(f"{n_secao}.{h2_count} {f.getPlainText()}", f.style)
                 story.append(novo_p)
                 if registro is not None:
@@ -111,8 +262,8 @@ def injetar_secao_dae(flowables_dae: list[Any], registro: list[Any] | None = Non
                 story.append(f_copy)
                 if registro is not None:
                     registro.append(f_copy)
-        
-        # 4. Faixa de prévia no rodapé de todas as páginas (D5), além do
+
+        # 6. Faixa de prévia no rodapé de todas as páginas (D5), além do
         # cabeçalho institucional original do app
         for pt in self.pageTemplates:
             orig_onPage = pt.onPage
@@ -131,13 +282,26 @@ def injetar_secao_dae(flowables_dae: list[Any], registro: list[Any] | None = Non
 
             pt.onPage = novo_onPage
 
+        # 7. Captura opcional do story completo para testes (D5)
+        if registro_story is not None:
+            registro_story.extend(story)
+
         return original_multiBuild(self, story, **kwargs)
 
     with mock.patch.object(_DocComSumario, "multiBuild", new=patched_multiBuild):
         yield
 
 
-def gerar_previa(caminhos_mapas=None, caminho_dae=None, caminho_ch=None, pasta_saida=None, cenario="A", sabado_reproduz=None, registro=None) -> list[Path]:
+def gerar_previa(
+    caminhos_mapas=None,
+    caminho_dae=None,
+    caminho_ch=None,
+    pasta_saida=None,
+    cenario="A",
+    sabado_reproduz=None,
+    registro=None,
+    registro_story=None,
+) -> list[Path]:
     if caminhos_mapas is None:
         caminhos_mapas = [
             p for p in sorted(PASTA_DADOS.glob("*.xls"))
@@ -229,11 +393,16 @@ def gerar_previa(caminhos_mapas=None, caminho_dae=None, caminho_ch=None, pasta_s
         caminho_pdf = saida_dir / nome_arquivo
         
         logo = str(_LOGO_PADRAO) if _LOGO_PADRAO.exists() else None
-        with injetar_secao_dae(flowables_dae, registro=registro if curso == grupos_processar[0][0] else None):
+        primeiro_curso = curso == grupos_processar[0][0]
+        with injetar_secao_dae(
+            flowables_dae,
+            registro=registro if primeiro_curso else None,
+            registro_story=registro_story if primeiro_curso else None,
+        ):
             buffer = criar_relatorio_pdf(
                 nome_curso=nome_curso_meta,
-                estatisticas=estat,
-                figuras=figuras,
+                estatisticas=estatisticas_sem_analise_faltas(estat),
+                figuras=figuras_sem_analise_faltas(figuras),
                 logo_path=logo,
                 estatisticas_multibimestre=estatisticas_multibimestre,
             )
