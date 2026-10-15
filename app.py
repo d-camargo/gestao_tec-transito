@@ -17,7 +17,7 @@ import streamlit as st
 
 # Versão "humana" do app. Incremente ao publicar mudanças relevantes; o commit
 # do Git (mostrado ao lado) é o identificador exato do que está no ar.
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.1.0"
 
 from core import relatorios
 from core.email_sender import DOMINIO_INSTITUCIONAL, email_valido, enviar_relatorio
@@ -25,6 +25,12 @@ from core.manipulacao import (
     ArquivoInvalidoError,
     processar_multiplos_bimestres,
     processar_multiplos_bimestres_transito_estradas,
+)
+from core.relatorio_aluno import (
+    comparar_aluno_turma,
+    criar_relatorio_aluno_pdf,
+    evolucao_aluno_turma,
+    listar_alunos,
 )
 from core.usage_tracker import registrar_uso
 
@@ -190,6 +196,54 @@ st.caption("ℹ️ O nome do curso e o bimestre são lidos automaticamente do ca
            "de cada arquivo. **Você pode enviar de 1 a 4 arquivos (um por bimestre); "
            "enviando 2 ou mais, o relatório inclui a Análise Multibimestral.**")
 
+gerar_aluno = st.checkbox("📄 Gerar também um relatório individual (aluno × turma)")
+matricula_aluno = None
+if gerar_aluno and arquivos_ok:
+    if eh_transito_estradas:
+        todos_arquivos = (arquivo_transito or []) + (arquivo_estradas or [])
+    else:
+        todos_arquivos = arquivo_unico or []
+    alunos = []
+    try:
+        for f in todos_arquivos:
+            f.seek(0)
+        if eh_transito_estradas:
+            if len(arquivo_transito) > 4 or len(arquivo_estradas) > 4:
+                raise ArquivoInvalidoError("Envie no máximo 4 arquivos de cada curso (um por bimestre).")
+            conjuntos_tt, conjuntos_est = processar_multiplos_bimestres_transito_estradas(
+                arquivo_transito, arquivo_estradas
+            )
+            c_tt_validos = [c for c in conjuntos_tt if not c[0].empty]
+            c_est_validos = [c for c in conjuntos_est if not c[0].empty]
+            grupos_listagem = []
+            if c_tt_validos:
+                grupos_listagem.append(c_tt_validos)
+            if c_est_validos:
+                grupos_listagem.append(c_est_validos)
+        else:
+            if len(arquivo_unico) > 4:
+                raise ArquivoInvalidoError("Envie no máximo 4 arquivos por vez (um por bimestre).")
+            conjuntos = processar_multiplos_bimestres(arquivo_unico)
+            c_validos = [c for c in conjuntos if not c[0].empty]
+            grupos_listagem = [c_validos] if c_validos else []
+
+        alunos = listar_alunos(grupos_listagem)
+    except ArquivoInvalidoError as e:
+        st.warning(str(e))
+    except Exception as e:
+        st.warning(f"Não foi possível listar os alunos: {e}")
+    finally:
+        for f in todos_arquivos:
+            f.seek(0)
+
+    if alunos:
+        nomes_map = {mat: nome for mat, nome in alunos}
+        matricula_aluno = st.selectbox(
+            "Aluno",
+            options=[mat for mat, _ in alunos],
+            format_func=lambda m: f"{nomes_map[m]} ({m})" if nomes_map.get(m) else str(m),
+        )
+
 enviar = st.button("📨 Gerar e enviar relatório por e-mail", type="primary")
 
 
@@ -209,7 +263,7 @@ def _fmt_bimestres(bimestres):
 
 
 def _gerar_pdf_para_conjunto(conjunto, usar_ia, api_key, estatisticas_multibimestre=None, bimestres_grupo=None):
-    """Gera (nome_arquivo, pdf_buffer, nome_curso) para um conjunto (df, df, disc, meta)."""
+    """Gera (nome_arquivo, pdf_buffer, nome_curso, estat) para um conjunto (df, df, disc, meta)."""
     df_notas, df_faltas, disciplinas_dict, metadados = conjunto
     nome_curso = metadados.get('curso_amigavel') or metadados.get('curso') or 'Curso'
 
@@ -228,7 +282,37 @@ def _gerar_pdf_para_conjunto(conjunto, usar_ia, api_key, estatisticas_multibimes
     serie = metadados.get('serie')
     serie_tag = f"_{serie}aserie" if serie else ""
     nome_arquivo = f"relatorio_{_slug(nome_curso)}{serie_tag}_bim{bim}.pdf"
-    return nome_arquivo, pdf_buffer, nome_curso
+    return nome_arquivo, pdf_buffer, nome_curso, estat
+
+
+def _gerar_pdf_aluno(grupo, conjunto_recente, estat, matricula):
+    """Gera (nome_arquivo, pdf_buffer) do relatório individual se a matrícula estiver no conjunto recente."""
+    df_notas, df_faltas, disciplinas_dict, metadados = conjunto_recente
+    if df_notas is None or df_notas.empty or 'matricula' not in df_notas.columns:
+        return None
+    str_mat = str(matricula).strip()
+    mats = df_notas['matricula'].astype(str).str.strip().values
+    if str_mat not in mats:
+        return None
+
+    nome_curso = metadados.get('curso_amigavel') or metadados.get('curso') or 'Curso'
+    try:
+        comp = comparar_aluno_turma(df_notas, df_faltas, disciplinas_dict, estat, str_mat)
+    except ValueError:
+        return None
+
+    evolucao = evolucao_aluno_turma(grupo, str_mat)
+    logo = LOGO_PATH if os.path.exists(LOGO_PATH) else None
+    pdf_buffer = criar_relatorio_aluno_pdf(
+        nome_curso, comp, estat, evolucao=evolucao, logo_path=logo
+    )
+
+    bimestres_grupo = [c[3].get('bimestre_num') for c in grupo]
+    bim = _fmt_bimestres(bimestres_grupo) if bimestres_grupo else (metadados.get('bimestre_num') or 'X')
+    serie = metadados.get('serie')
+    serie_tag = f"_{serie}aserie" if serie else ""
+    nome_arquivo = f"relatorio_aluno_{str_mat}_{_slug(nome_curso)}{serie_tag}_bim{bim}.pdf"
+    return nome_arquivo, pdf_buffer
 
 
 def processar_e_enviar():
@@ -292,6 +376,7 @@ def processar_e_enviar():
             anexos = []
             cursos = []
             bimestres_enviados = []
+            incluiu_relatorio_aluno = False
             for grupo in grupos_processar:
                 # O relatório principal é gerado para o bimestre mais recente (o último do grupo ordenado)
                 conjunto_recente = grupo[-1]
@@ -301,13 +386,19 @@ def processar_e_enviar():
                 # Estatísticas multibimestres (calculadas usando todos os bimestres do grupo)
                 estatisticas_multibimestre = relatorios.calcular_estatisticas_multibimestre(grupo)
 
-                nome_arquivo, pdf_buffer, nome_curso = _gerar_pdf_para_conjunto(
+                nome_arquivo, pdf_buffer, nome_curso, estat = _gerar_pdf_para_conjunto(
                     conjunto_recente, usar_ia, api_key,
                     estatisticas_multibimestre=estatisticas_multibimestre,
                     bimestres_grupo=bimestres_grupo,
                 )
                 anexos.append((nome_arquivo, pdf_buffer))
                 cursos.append(nome_curso)
+
+                if matricula_aluno:
+                    res_aluno = _gerar_pdf_aluno(grupo, conjunto_recente, estat, matricula_aluno)
+                    if res_aluno:
+                        anexos.append(res_aluno)
+                        incluiu_relatorio_aluno = True
     except Exception as e:
         st.error(f"Erro ao gerar o(s) relatório(s): {e}")
         return
@@ -330,7 +421,10 @@ def processar_e_enviar():
     registrar_uso(cursos, bim, email.strip(), st.secrets)
 
     cursos_fmt = " e ".join(f"**{c}**" for c in cursos)
-    st.success(f"✅ Relatório(s) — {cursos_fmt} — enviado(s) para **{email.strip()}**.")
+    msg_sucesso = f"✅ Relatório(s) — {cursos_fmt} — enviado(s) para **{email.strip()}**."
+    if incluiu_relatorio_aluno:
+        msg_sucesso += "\n\nO relatório individual do aluno selecionado também foi incluído."
+    st.success(msg_sucesso)
     st.info("Verifique sua caixa de entrada (e a pasta de spam). "
             "Nenhum arquivo fica armazenado nesta página.")
 

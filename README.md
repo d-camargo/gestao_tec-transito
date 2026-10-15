@@ -256,6 +256,49 @@ Estradas, porque o de Estradas traz o ensino médio compartilhado) e produz
 "Curso único", basta enviar os arquivos no campo único e as disciplinas são
 extraídas dinamicamente do próprio mapa.
 
+### Relatório individual (aluno × turma)
+
+Além dos relatórios gerais por turma, o app permite gerar opcionalmente um
+**relatório individual em PDF** comparando o desempenho de um estudante
+específico com a sua turma.
+
+- **Opcional na interface:** ativado por uma caixa de seleção (*checkbox*). Ao
+  ser marcado, o app identifica todos os alunos presentes nos mapas enviados
+  (deduplicados por matrícula e ordenados por nome) para seleção pelo
+  coordenador.
+- **O que o PDF traz:**
+  - **Cabeçalho enxuto:** identificação do aluno (nome e matrícula), curso,
+    série, turma, período letivo e data de emissão.
+  - **Resumo do desempenho:** média do aluno vs. média geral da turma, posição
+    na turma (calculada com desempate justo por `min`), quantidade de
+    disciplinas abaixo do limiar de aprovação e — quando houver dados de
+    frequência — faltas totais do aluno vs. média de faltas da turma.
+  - **Desempenho por disciplina:** tabela detalhada com nota do aluno, média da
+    turma, mediana da turma, diferença (*aluno − média*) e faltas (aluno e média
+    da turma, se disponíveis). Apenas disciplinas com notas entram na lista, e
+    aquelas com suspeita de lançamento incompleto são marcadas com asterisco
+    (`*`).
+  - **Comparação visual por disciplina:** gráfico de barras agrupadas (nota do
+    aluno × média da turma) com linha de referência no limiar de aprovação.
+  - **Evolução ao longo dos bimestres:** com 2 ou mais bimestres enviados, o PDF
+    inclui uma tabela e um gráfico de linha comparando o aproveitamento
+    percentual do aluno com a média da turma (% da pontuação de cada bimestre).
+- **Privacidade e LGPD:** apenas o aluno escolhido é nomeado no documento.
+  Todos os demais indicadores da turma são estritamente agregados (médias,
+  medianas e totais), sem expor nomes ou dados de colegas. O documento traz
+  nota expressa de privacidade no rodapé.
+- **Sem envio para IA:** nenhum dado do aluno ou do relatório individual é
+  encaminhado para serviços externos de inteligência artificial, mesmo se a
+  chave de API da OpenAI estiver configurada.
+- **Modo Trânsito + Estradas:** gera **um PDF individual por curso em que o
+  aluno aparece** (por exemplo, se o estudante constar na turma de Trânsito,
+  gera o relatório individual de Trânsito; se constar em ambos, gera os dois
+  PDFs), anexados no mesmo e-mail junto aos relatórios gerais.
+- **O que ficou de fora:** métricas agregadas da análise multibimestral como o
+  **IDA** (Índice de Desempenho do Aluno) e a **Probabilidade de Reprovação** não
+  entram no relatório individual. O documento mantém-se focado, enxuto e de
+  leitura direta, próprio para reuniões pedagógicas e atendimentos individuais.
+
 ## 🗂️ Estrutura do projeto
 
 ```
@@ -265,6 +308,7 @@ extraídas dinamicamente do próprio mapa.
 │   ├── disciplinas.py      # Catálogo de nomes amigáveis de disciplinas
 │   ├── email_sender.py     # Validação de e-mail e envio SMTP (Gmail)
 │   ├── manipulacao.py      # Leitura/processamento dos .xls -> DataFrames
+│   ├── relatorio_aluno.py  # Comparação aluno × turma e PDF individual
 │   ├── relatorios.py       # Estatísticas, gráficos, IA e geração do PDF
 │   └── usage_tracker.py    # Registro de uso em Google Sheets (opcional)
 ├── assets/                 # Logo institucional opcional (logo_cefet.png)
