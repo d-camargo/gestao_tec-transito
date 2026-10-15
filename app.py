@@ -17,7 +17,7 @@ import streamlit as st
 
 # Versão "humana" do app. Incremente ao publicar mudanças relevantes; o commit
 # do Git (mostrado ao lado) é o identificador exato do que está no ar.
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 
 from core import relatorios
 from core.email_sender import DOMINIO_INSTITUCIONAL, email_valido, enviar_relatorio
@@ -28,6 +28,7 @@ from core.manipulacao import (
 )
 from core.relatorio_aluno import (
     comparar_aluno_turma,
+    consolidar_bimestres,
     criar_relatorio_aluno_pdf,
     evolucao_aluno_turma,
     listar_alunos,
@@ -297,14 +298,18 @@ def _gerar_pdf_aluno(grupo, conjunto_recente, estat, matricula):
 
     nome_curso = metadados.get('curso_amigavel') or metadados.get('curso') or 'Curso'
     try:
-        comp = comparar_aluno_turma(df_notas, df_faltas, disciplinas_dict, estat, str_mat)
+        if len(grupo) >= 2:
+            df_n, df_f, disc, estat_rel = consolidar_bimestres(grupo)
+        else:
+            df_n, df_f, disc, estat_rel = df_notas, df_faltas, disciplinas_dict, estat
+        comp = comparar_aluno_turma(df_n, df_f, disc, estat_rel, str_mat)
     except ValueError:
         return None
 
     evolucao = evolucao_aluno_turma(grupo, str_mat)
     logo = LOGO_PATH if os.path.exists(LOGO_PATH) else None
     pdf_buffer = criar_relatorio_aluno_pdf(
-        nome_curso, comp, estat, evolucao=evolucao, logo_path=logo
+        nome_curso, comp, estat_rel, evolucao=evolucao, logo_path=logo
     )
 
     bimestres_grupo = [c[3].get('bimestre_num') for c in grupo]

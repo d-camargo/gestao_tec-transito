@@ -266,6 +266,11 @@ específico com a sua turma.
   ser marcado, o app identifica todos os alunos presentes nos mapas enviados
   (deduplicados por matrícula e ordenados por nome) para seleção pelo
   coordenador.
+- **Acumulado multibimestre:** com 2 ou mais bimestres enviados, o
+  aproveitamento acumulado em % considera apenas os bimestres com nota lançada
+  para o aluno na disciplina (soma dos pontos obtidos ÷ soma da pontuação máxima
+  desses bimestres), com limiar fixo em 60% e a turma definida pelos alunos do
+  bimestre mais recente; com 1 bimestre, o relatório segue em pontos.
 - **O que o PDF traz:**
   - **Cabeçalho enxuto:** identificação do aluno (nome e matrícula), curso,
     série, turma, período letivo e data de emissão.
@@ -280,6 +285,10 @@ específico com a sua turma.
     (`*`).
   - **Comparação visual por disciplina:** gráfico de barras agrupadas (nota do
     aluno × média da turma) com linha de referência no limiar de aprovação.
+  - **Seção STEM (Matemática, Física e Química):** tabela (nota ou
+    aproveitamento, média da turma, posição na disciplina, faltas e quadrante de
+    risco) e dispersão notas × faltas com quadrantes por disciplina, com o
+    aluno em destaque e colegas anônimos.
   - **Evolução ao longo dos bimestres:** com 2 ou mais bimestres enviados, o PDF
     inclui uma tabela e um gráfico de linha comparando o aproveitamento
     percentual do aluno com a média da turma (% da pontuação de cada bimestre).
